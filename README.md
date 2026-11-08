@@ -12,6 +12,7 @@ These files go in the robot's `Code/Server` folder on the Pi, next to Freenove's
 | `bert_config.py` | The MCP server's safety limits and settings |
 | `cat_patrol.py`, `cat_vision.py` | The cat patrol and its camera/cat-recognition code |
 | `patrol_config.py` | Patrol settings plus calibration shared with the MCP server: head centre and channels, turn size, battery cut-offs |
+| `control.py` | Freenove's leg control, with `np.mat` replaced by `np.asmatrix` so body tilt works on NumPy 2 (same as Freenove's current upstream version) |
 | `get_cat_model.sh` | Downloads the cat detector model (once) |
 | `mcp.json` | Claude Code config that starts the server over SSH. Save it as `.mcp.json` in the folder you open Claude Code in |
 | `LARGE_BERT_MCP.md` | Install and usage guide for the MCP server |
