@@ -2,7 +2,7 @@
 """Large Bert's MCP server: lets Claude drive the Freenove Big Hexapod.
 
 Tools: status, walk, turn, stop, stand_up, relax, look, snapshot, who_is_there,
-body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status.
+body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen.
 
 Safety (settings in bert_config.py, battery cut-offs from patrol_config.py):
   * every walk/turn is capped in steps and seconds, and checks the stop flag,
@@ -11,6 +11,8 @@ Safety (settings in bert_config.py, battery cut-offs from patrol_config.py):
   * the legs relax by themselves after IDLE_RELAX_SECONDS without a command
   * below MIN_LOAD_BATTERY_V / MIN_PI_BATTERY_V it relaxes and refuses to move
   * when the connection drops or the server exits, the robot relaxes, lights off
+  * saying "Bert, stop" (or just "stop") near the ReSpeaker mic stops him on the Pi at once,
+    without waiting on Claude (bert_ears.py; turn off with --no-ears)
 
 Run from Code/Server on the Pi (stop main.py and cat_patrol.py first):
     python3 large_bert_mcp.py            # stdio, for Claude over SSH (default)
@@ -47,6 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--sim", action="store_true", help="fake robot and camera, for testing anywhere")
     parser.add_argument("--no-move", action="store_true", help="refuse all walking/turning (look, lights and status only)")
     parser.add_argument("--check", action="store_true", help="run a quick hardware self-test and exit")
+    parser.add_argument("--no-ears", action="store_true", help="no microphone: no voice stop, no listen tool")
     ARGS = parser.parse_args()
     if not ARGS.http and not ARGS.check:
         _protect_stdout()
@@ -302,8 +305,10 @@ class Refused(Exception):
 
 
 class Bert:
-    def __init__(self, sim=False, no_move=False):
+    def __init__(self, sim=False, no_move=False, use_ears=None):
         self.sim = sim
+        if use_ears is None:
+            use_ears = not sim               # a simulated Bert leaves the real mic alone
         self.no_move = no_move
         self.hw = LockedHardware(FakeHardware() if sim else Hardware())
         self.stop_event = threading.Event()
@@ -320,6 +325,18 @@ class Bert:
         self.patrol_log = deque(maxlen=200)
         self.patrol_info = {}
         self._closed = False
+        self.voice_stopped = False
+        self.ears = None
+        self.ears_error = None
+        if use_ears:
+            try:
+                import bert_ears
+                self.ears = bert_ears.Ears(on_stop=self._voice_stop, log=lambda m: log("[ears] " + m))
+            except Exception as exc:             # no mic, no vosk, no model: everything else still works
+                self.ears_error = str(exc)
+                log("Voice stop is off: %s" % exc)
+        else:
+            self.ears_error = "turned off (--no-ears)"
         self.check_battery(force=True)
         threading.Thread(target=self._watchdog, daemon=True).start()
 
@@ -355,6 +372,31 @@ class Bert:
             log("Battery back to normal.")
             self.battery_low = False
         return not self.battery_low
+
+    def _voice_stop(self, heard):
+        """Called from the ears thread when someone says "Bert, stop"."""
+        self.voice_stopped = True
+        self.stop_event.set()
+        log("Voice stop (heard %r)." % heard)
+        threading.Thread(target=self._voice_stop_finish, daemon=True).start()
+
+    def _voice_stop_finish(self):
+        try:
+            self.stop()
+        except Exception as exc:
+            log("Voice stop: %s" % exc)
+
+    def listen(self, seconds):
+        if self.ears is None:
+            raise Refused("the microphone isn't set up (%s)" % (self.ears_error or "voice off"))
+        try:
+            result = self.ears.listen(seconds)
+        except RuntimeError as exc:
+            raise Refused(str(exc))
+        self.touch()
+        if result["heard_stop"]:
+            result["note"] = "A stop word was heard, so Large Bert stopped."
+        return result
 
     def require_can_move(self):
         if self.no_move:
@@ -392,13 +434,14 @@ class Bert:
         """Run gait cycles with all the checks. Returns a summary string."""
         self.require_can_move()
         self.stop_event.clear()
+        self.voice_stopped = False
         self.touch()
         self.relaxed = False
         start = time.time()
         done, reason = 0, "done"
         for step in range(cycles):
             if self.stop_event.is_set():
-                reason = "stopped by stop command"
+                reason = "stopped by voice (someone said stop)" if self.voice_stopped else "stopped by stop command"
                 break
             if time.time() - start > B.MAX_MOVE_SECONDS:
                 reason = "time limit (%ds) reached" % B.MAX_MOVE_SECONDS
@@ -592,6 +635,7 @@ class Bert:
             "patrol_running": self.patrol_running(),
             "movement_allowed": not self.no_move,
             "quiet_hours_now": in_quiet_hours(),
+            "ears": self.ears.status() if self.ears else {"mic_ok": False, "error": self.ears_error},
             "limits": {"max_steps_per_call": B.MAX_STEPS_PER_CALL, "max_move_seconds": B.MAX_MOVE_SECONDS,
                        "max_speed": B.MAX_SPEED, "max_step_length": B.MAX_STEP_LENGTH,
                        "min_obstacle_cm": B.MIN_OBSTACLE_CM, "idle_relax_seconds": B.IDLE_RELAX_SECONDS},
@@ -665,6 +709,8 @@ class Bert:
         except Exception:
             pass
         self._relax()
+        if self.ears is not None:
+            self.ears.close()
         if self.camera is not None:
             try:
                 self.camera.close()
@@ -690,6 +736,8 @@ Be careful: it is a physical machine near people and cats.
 - Move in small steps (a few gait cycles at a time) and look again. One gait cycle is about 10 cm (4 in) at length 30, scaling with length.
 - Call stop at once if anything looks wrong. Every walk is capped and will stop on its own.
 - Never chase, corner or touch an animal. To shoo the orange intruder cat, use patrol_start, which has humane limits built in.
+- Use listen to hear what people near him say. Saying "Bert, stop" stops him on the Pi by itself; if a walk
+  ends "stopped by voice", someone told him to stop, so don't just carry on.
 - When you're done, call relax so the servos rest."""
 
 mcp = _Server("Large Bert", instructions=INSTRUCTIONS)
@@ -825,6 +873,14 @@ async def patrol_stop() -> str:
 
 
 @mcp.tool()
+async def listen(seconds: float = 6) -> dict:
+    """Listen through Large Bert's microphone and return what was said (offline speech-to-text on the Pi,
+    rough on unusual words). seconds: 1..30, the longest to wait; it returns soon after a sentence ends.
+    Anyone saying "Bert, stop" stops him on the Pi at any time, whether or not you are listening."""
+    return await call(BERT.listen, seconds)
+
+
+@mcp.tool()
 async def patrol_status(lines: int = 20) -> dict:
     """Is the patrol running, and its most recent log lines."""
     return await run_blocking(BERT.patrol_status, lines)
@@ -952,7 +1008,7 @@ def main():
     global BERT
     if not ARGS.sim:
         stop_old_servers()
-    BERT = Bert(sim=ARGS.sim, no_move=ARGS.no_move)
+    BERT = Bert(sim=ARGS.sim, no_move=ARGS.no_move, use_ears=not ARGS.sim and not ARGS.no_ears)
     atexit.register(BERT.close)
 
     def on_signal(signum, _frame):
