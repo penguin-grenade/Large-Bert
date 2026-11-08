@@ -5,7 +5,7 @@ plugged into the Windows PC.
 
 | File | Where it runs | What it does |
 |---|---|---|
-| `bert_wheel.py` | PC | Reads the wheel and pedals, shows a small dashboard window, streams 20 updates a second |
+| `bert_wheel.py` | PC | Reads the wheel and pedals, shows Bert's head camera with a dashboard on top, streams 20 updates a second |
 | `bert_drive.py` | Pi (`Code/Server`) | Started by `bert_wheel.py` over SSH. Turns the input into gait cycles with safety checks |
 
 There's no open port. The PC starts the Pi side over the same passwordless SSH that
@@ -20,11 +20,20 @@ the MCP server uses (`LARGE_BERT_MCP.md`, step 4).
 | Wheel | Turns. With no pedal pressed he turns on the spot; with a pedal he curves |
 | Paddles (if set up) | Crab-walks left or right at up to 60% speed |
 | Horn button (if set up) | A short beep. Silent during quiet hours (22:00 to 07:00) |
+| D-pad on the wheel (or arrow keys) | Turns his head to look around. `C` points it straight ahead again |
 | `S` / `R` key | Stand up / relax the legs |
 | `Esc` or close the window | Stop, relax, disconnect |
 
 Let go of both pedals and he stops mid-stride, within about half a second, and puts his feet back under him.
 A step takes 1 to 3 seconds, so changing direction also cuts the current step short and starts a new one.
+
+## Video
+
+The window shows Bert's head camera live, about 12 frames a second, over the same SSH
+link (about 300 KB/s on the home Wi-Fi). Drag the window bigger or maximise it; the picture
+keeps its shape. If Wi-Fi slows down, frames are dropped rather than delaying the controls.
+The dashboard shows a "Video paused" line if no picture has arrived for over 1.5 s.
+Run the Pi side with `--no-video` to turn it off.
 
 ## Setup
 

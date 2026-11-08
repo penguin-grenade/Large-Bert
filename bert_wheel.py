@@ -15,6 +15,8 @@ Let go of both pedals and he stops. If this program, the wheel or Wi-Fi stops
 for half a second, Bert stops by himself; if the connection drops he relaxes.
 """
 import argparse
+import base64
+import io
 import json
 import os
 import queue
@@ -31,6 +33,8 @@ PI = "pi@192.168.0.119"
 PI_DIR = "~/Freenove_Big_Hexapod_Robot_Kit_for_Raspberry_pi/Code/Server"
 PI_PYTHON = "/home/pi/bert-venv/bin/python"
 SEND_HZ = 20
+LOOK_STEP = 4          # degrees the head moves per update while the D-pad is held
+PAN_LIMIT, TILT_LIMIT = 80, 50
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bert_wheel.json")
 
 
@@ -111,31 +115,63 @@ class Mapping:
 # Window
 # ---------------------------------------------------------------------------
 class Screen:
+    """The driving window. With video, Bert's camera fills it and the dashboard sits in
+    small see-through boxes in the top-left and bottom-left corners."""
     def __init__(self):
-        self.win = pygame.display.set_mode((640, 360))
+        self.win = pygame.display.set_mode((1024, 768), pygame.RESIZABLE)
         pygame.display.set_caption("Large Bert - wheel drive")
         self.big = pygame.font.SysFont("segoeui", 30, bold=True)
         self.font = pygame.font.SysFont("segoeui", 20)
+        self.small = pygame.font.SysFont("segoeui", 16)
 
-    def draw(self, title, lines, colour=(230, 230, 230), bars=None):
+    def _box(self, rect):
+        shade = pygame.Surface(rect[2:], pygame.SRCALPHA)
+        shade.fill((10, 12, 16, 160))
+        self.win.blit(shade, rect[:2])
+
+    def _bars(self, bars, x, y, width, font):
+        for name, value, lo in bars:
+            self.win.blit(font.render(name, True, (170, 176, 186)), (x, y))
+            bx = x + 70
+            pygame.draw.rect(self.win, (60, 66, 76), (bx, y + 5, width, 10), border_radius=5)
+            if lo < 0:      # centred bar
+                w = int(width / 2 * value)
+                pygame.draw.rect(self.win, (90, 170, 255), (bx + width // 2 + min(0, w), y + 5, abs(w), 10),
+                                 border_radius=5)
+            else:
+                pygame.draw.rect(self.win, (90, 210, 130), (bx, y + 5, int(width * value), 10), border_radius=5)
+            y += 22
+
+    def draw(self, title, lines, colour=(230, 230, 230), bars=None, video=None):
+        W, H = self.win.get_size()
         self.win.fill((22, 26, 32))
-        self.win.blit(self.big.render(title, True, colour), (24, 18))
-        y = 72
-        for line in lines:
-            self.win.blit(self.font.render(line, True, (210, 214, 220)), (24, y))
-            y += 28
+        if video is None:            # setup screens and no-camera: plain dashboard
+            self.win.blit(self.big.render(title, True, colour), (24, 18))
+            y = 72
+            for line in lines:
+                self.win.blit(self.font.render(line, True, (210, 214, 220)), (24, y))
+                y += 28
+            if bars:
+                self._bars(bars, 24, y + 20, min(460, W - 140), self.font)
+            pygame.display.flip()
+            return
+        vw, vh = video.get_size()     # fill the window, keeping the camera's shape
+        scale = min(W / vw, H / vh)
+        size = (int(vw * scale), int(vh * scale))
+        self.win.blit(pygame.transform.smoothscale(video, size), ((W - size[0]) // 2, (H - size[1]) // 2))
+        texts = [self.font.render(title, True, colour)] + \
+                [self.small.render(line, True, (225, 228, 234)) for line in lines]
+        box_w = max(t.get_width() for t in texts) + 24
+        box_h = sum(t.get_height() for t in texts) + 16
+        self._box((10, 10, box_w, box_h))
+        y = 18
+        for t in texts:
+            self.win.blit(t, (22, y))
+            y += t.get_height()
         if bars:
-            y = 250
-            for name, value, lo in bars:
-                self.win.blit(self.font.render(name, True, (160, 166, 176)), (24, y))
-                pygame.draw.rect(self.win, (60, 66, 76), (140, y + 6, 460, 14), border_radius=7)
-                if lo < 0:      # centred bar
-                    w = int(230 * value)
-                    x = 370 + min(0, w)
-                    pygame.draw.rect(self.win, (90, 170, 255), (x, y + 6, abs(w), 14), border_radius=7)
-                else:
-                    pygame.draw.rect(self.win, (90, 210, 130), (140, y + 6, int(460 * value), 14), border_radius=7)
-                y += 30
+            bh = 22 * len(bars) + 14
+            self._box((10, H - bh - 10, 290, bh))
+            self._bars(bars, 20, H - bh - 3, 200, self.small)
         pygame.display.flip()
 
 
@@ -251,6 +287,8 @@ class Link:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         self.status = {"state": "connecting..."}
         self.obstacle_cm = 25
+        self.frame = None            # latest head-camera picture (pygame Surface)
+        self.frame_time = 0.0
         self.errors = []
         self.inbox = queue.Queue()
         threading.Thread(target=self._read, args=(self.proc.stdout, True), daemon=True).start()
@@ -263,13 +301,23 @@ class Link:
                 continue
             if is_status:
                 try:
-                    self.status = json.loads(line)
-                    if "obstacle_cm" in self.status:
-                        self.obstacle_cm = self.status["obstacle_cm"]
-                    if self.status.get("msg"):
-                        self.inbox.put(self.status["msg"])
+                    data = json.loads(line)
                 except ValueError:
-                    pass
+                    continue
+                if "jpg" in data:
+                    try:
+                        jpeg = base64.b64decode(data["jpg"])
+                        self.frame = pygame.image.load(io.BytesIO(jpeg), "frame.jpg")
+                        self.frame_time = time.time()
+                    except Exception:
+                        pass
+                    continue
+                if "state" in data:
+                    self.status = data
+                if "obstacle_cm" in data:
+                    self.obstacle_cm = data["obstacle_cm"]
+                if data.get("msg"):
+                    self.inbox.put(data["msg"])
             else:
                 self.errors.append(line)
                 del self.errors[:-6]
@@ -335,6 +383,7 @@ def main():
     link = None if args.no_robot else Link(args.sim)
     clock = pygame.time.Clock()
     note, note_until = "", 0
+    pan, tilt = 0, 0            # head, degrees from straight ahead (+pan = left, +tilt = up)
     try:
         while True:
             for ev in pygame.event.get():
@@ -345,6 +394,18 @@ def main():
                         link.send(cmd="stand")
                     elif ev.key == pygame.K_r:
                         link.send(cmd="relax")
+                    elif ev.key == pygame.K_c:
+                        pan, tilt = 0, 0
+            hat_x = hat_y = 0           # D-pad (or arrow keys) moves the head
+            for st_ in sticks:
+                for h in range(st_.get_numhats()):
+                    hx, hy = st_.get_hat(h)
+                    hat_x, hat_y = hat_x or hx, hat_y or hy
+            keys = pygame.key.get_pressed()
+            hat_x = hat_x or (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT])
+            hat_y = hat_y or (keys[pygame.K_UP] - keys[pygame.K_DOWN])
+            pan = max(-PAN_LIMIT, min(PAN_LIMIT, pan - hat_x * LOOK_STEP))
+            tilt = max(-TILT_LIMIT, min(TILT_LIMIT, tilt + hat_y * LOOK_STEP))
             throttle, brake, steer = mapping.pedal("throttle"), mapping.pedal("brake"), mapping.steer()
             fwd = throttle - brake
             side = (1.0 if mapping.button("crab_right") else 0.0) - (1.0 if mapping.button("crab_left") else 0.0)
@@ -362,7 +423,7 @@ def main():
                                 return
                         time.sleep(0.05)
                 if link.status.get("state") != "connecting...":   # don't queue input while he boots
-                    link.send(fwd=round(fwd, 3), turn=round(steer, 3), side=side, horn=horn)
+                    link.send(fwd=round(fwd, 3), turn=round(steer, 3), side=side, horn=horn, look=[pan, tilt])
                 st = link.status
                 state = st.get("state", "?")
                 title = "Bert: " + state
@@ -378,9 +439,14 @@ def main():
                     pass
                 if time.time() < note_until:
                     lines.append(note[:72])
-            lines.append("S stand   R relax   Esc quit" + ("   (SIMULATED)" if args.sim else ""))
+            lines.append("D-pad look (C centre)   S stand   R relax   Esc quit" + ("   SIMULATED" if args.sim else ""))
+            video = None
+            if link and link.frame is not None:
+                video = link.frame
+                if time.time() - link.frame_time > 1.5:
+                    lines.append("Video paused (no picture for %.0f s)" % (time.time() - link.frame_time))
             screen.draw(title, lines, colour,
-                        bars=[("Steer", steer, -1), ("Accel", throttle, 0), ("Brake", brake, 0)])
+                        bars=[("Steer", steer, -1), ("Accel", throttle, 0), ("Brake", brake, 0)], video=video)
             clock.tick(SEND_HZ)
     finally:
         if link:

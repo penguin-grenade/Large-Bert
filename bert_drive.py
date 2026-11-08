@@ -5,10 +5,11 @@ This is the Pi side. It is started by bert_wheel.py on the PC over SSH, so
 there is no open port and the SSH key is the password. It reads one JSON line
 per input sample on stdin and writes status lines on stdout.
 
-    in : {"fwd": -1..1, "turn": -1..1, "side": -1..1, "horn": 0|1}
+    in : {"fwd": -1..1, "turn": -1..1, "side": -1..1, "horn": 0|1, "look": [pan, tilt] (optional)}
          (fwd + is forward, turn + is LEFT, side + is crab-walk right)
          or {"cmd": "stand" | "relax" | "quit"}
     out: {"state": ..., "dist": cm, "load_v": V, "pi_v": V, "msg": ...}
+         {"jpg": base64 JPEG} from the head camera, VIDEO_FPS times a second
 
 Safety (on top of everything in large_bert_mcp.Bert: battery cut-offs,
 idle relax, quiet hours for the horn):
@@ -27,6 +28,7 @@ Run from Code/Server on the Pi:
 import argparse
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -44,6 +46,9 @@ DEADMAN_SECONDS = 0.5     # no input for this long: stop
 REVERSE_FRACTION = 0.6    # reverse and crab-walk are capped at this share of full speed
 DEADZONE = 0.08           # inputs smaller than this count as zero
 MIN_GAIT_SPEED = 5        # gait speed at a light touch of the pedal (Freenove 2..10)
+VIDEO_FPS = 12            # head camera frames sent to the PC per second
+VIDEO_SIZE = (640, 480)
+VIDEO_QUALITY = 60        # JPEG quality; about 30 KB a frame
 ABORT_CHECK_SECONDS = 0.1 # how often a step in progress re-checks the input and the ultrasonic
 STATUS_SECONDS = 0.5
 BATTERY_EVERY_CYCLES = 4
@@ -54,12 +59,64 @@ def log(message):
     sys.stderr.flush()
 
 
-def send(**fields):
+_OUTBOX = queue.Queue(maxsize=8)
+
+
+def _writer():
+    """The only thread that writes to the PC. If the PC stops reading, this one blocks,
+    never the driving loop, so the deadman and mid-step stops keep working."""
+    while True:
+        line = _OUTBOX.get()
+        try:
+            _OUT.write(line)
+            _OUT.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+
+threading.Thread(target=_writer, daemon=True).start()
+
+
+def send(_droppable=False, **fields):
+    """Queue a line for the PC. Video frames are dropped when the link is behind;
+    status lines push out the oldest queued line instead of waiting."""
+    line = json.dumps(fields) + "\n"
+    if _droppable and _OUTBOX.qsize() > 2:
+        return
+    while True:
+        try:
+            _OUTBOX.put_nowait(line)
+            return
+        except queue.Full:
+            try:
+                _OUTBOX.get_nowait()
+            except queue.Empty:
+                pass
+
+
+def stream_video(bert, stop):
+    """Send head-camera frames to the PC until stop is set. Never touches the legs."""
+    import base64
+    import cv2
     try:
-        _OUT.write(json.dumps(fields) + "\n")
-        _OUT.flush()
-    except (BrokenPipeError, OSError, ValueError):
-        pass
+        camera = bert.get_camera()
+    except Exception as exc:
+        log("No camera: %s" % exc)
+        send(msg="No video: %s" % exc)
+        return
+    stamp = 0.0
+    while not stop.is_set():
+        start = time.time()
+        frame = camera.read(newer_than=stamp, timeout=1.0)
+        if frame is None:
+            continue
+        stamp = time.time()
+        if (frame.shape[1], frame.shape[0]) != VIDEO_SIZE:
+            frame = cv2.resize(frame, VIDEO_SIZE)
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), VIDEO_QUALITY])
+        if ok:
+            send(_droppable=True, jpg=base64.b64encode(buf.tobytes()).decode("ascii"))
+        time.sleep(max(0.0, 1.0 / VIDEO_FPS - (time.time() - start)))
 
 
 def other_owners():
@@ -132,6 +189,8 @@ class Driver:
         self.B = B
         self.lock = threading.Lock()
         self.cmd = {"fwd": 0.0, "turn": 0.0, "side": 0.0, "horn": 0}
+        self.look_to = None          # newest head position asked for, not yet applied
+        self.last_look = None
         self.last_rx = 0.0
         self.eof = False
         self.pending = []           # one-off commands: stand, relax
@@ -166,6 +225,8 @@ class Driver:
                     for key in ("fwd", "turn", "side", "horn"):
                         if key in msg:
                             self.cmd[key] = msg[key]
+                    if "look" in msg and msg["look"] != self.last_look:
+                        self.look_to = self.last_look = msg["look"]
         self.eof = True
 
     def take(self):
@@ -175,12 +236,22 @@ class Driver:
             pending, self.pending = self.pending, []
         return cmd, age, pending
 
+    def apply_look(self):
+        with self.lock:
+            target, self.look_to = self.look_to, None
+        if target is not None:
+            try:
+                self.bert.look(float(target[0]), float(target[1]))
+            except Exception as exc:
+                log("Look failed: %s" % exc)
+
     def should_abort(self):
         """Called about every 10 ms during a gait cycle. Returns a reason to stop now, or None."""
         now = time.time()
         if now - self.last_check < ABORT_CHECK_SECONDS:
             return None
         self.last_check = now
+        self.apply_look()            # the head can move while he walks
         cmd, age, _ = self.take_peek()
         if age > DEADMAN_SECONDS:
             return "no input (deadman)"
@@ -252,6 +323,7 @@ class Driver:
                         send(state="refused", msg=str(exc))
                 self.bert.touch()
 
+            self.apply_look()
             fwd, turn, side = shape(cmd["fwd"]), shape(cmd["turn"]), shape(cmd["side"])
             if age > DEADMAN_SECONDS:
                 if self.moving:
@@ -329,6 +401,7 @@ class Driver:
 def main():
     parser = argparse.ArgumentParser(description="Live drive listener for Large Bert (stdin/stdout, run over SSH).")
     parser.add_argument("--sim", action="store_true", help="pretend robot, logs instead of moving")
+    parser.add_argument("--no-video", action="store_true", help="don't stream the head camera")
     args = parser.parse_args()
 
     if not args.sim:
@@ -362,9 +435,14 @@ def main():
          max_step=B.MAX_STEP_LENGTH, max_speed=B.MAX_SPEED, obstacle_cm=B.MIN_OBSTACLE_CM,
          load_v=bert.last_volts[0], pi_v=bert.last_volts[1])
     log("Ready (%s)." % ("simulated" if args.sim else "real robot"))
+    video_stop = threading.Event()
+    if not args.no_video:
+        threading.Thread(target=stream_video, args=(bert, video_stop), daemon=True).start()
     try:
         Driver(bert, B).run()
     finally:
+        video_stop.set()
+        time.sleep(0.2)
         bert.close()
 
 
