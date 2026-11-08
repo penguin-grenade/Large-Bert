@@ -17,8 +17,11 @@ These files go in the robot's `Code/Server` folder on the Pi, next to Freenove's
 | `mcp.json` | Claude Code config that starts the server over SSH. Save it as `.mcp.json` in the folder you open Claude Code in |
 | `LARGE_BERT_MCP.md` | Install and usage guide for the MCP server |
 | `CAT_PATROL.md` | Guide for the cat patrol |
+| `bert_drive.py` | Live drive listener: lets the PC's steering wheel and pedals walk him, with a deadman stop, speed caps and the ultrasonic obstacle stop |
+| `bert_wheel.py` | Runs on the **Windows PC**, not the Pi: reads the wheel/pedals with pygame and drives Bert over SSH |
+| `WHEEL_DRIVE.md` | Guide for driving him with the wheel |
 
-Not in the repo: the reference cat photos (`cats/`), the models (`cat_model/`), and patrol logs.
+Not in the repo: `bert_wheel.json` (the PC's saved wheel setup), the reference cat photos (`cats/`), the models (`cat_model/`), and patrol logs.
 
 ## Calibration (measured 2026-11-08)
 - Head: pan is servo channel 1, tilt is channel 0. Straight ahead is pan 108, tilt 105.

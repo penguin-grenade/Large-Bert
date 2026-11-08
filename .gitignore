@@ -5,3 +5,4 @@ cat_model/
 backups/
 large_bert_check.jpg
 .large_bert_token
+bert_wheel.json
