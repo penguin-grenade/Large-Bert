@@ -43,7 +43,8 @@ os.dup2(2, 1)
 DEADMAN_SECONDS = 0.5     # no input for this long: stop
 REVERSE_FRACTION = 0.6    # reverse and crab-walk are capped at this share of full speed
 DEADZONE = 0.08           # inputs smaller than this count as zero
-MIN_GAIT_SPEED = 3        # gait speed at a light touch of the pedal (Freenove 2..10)
+MIN_GAIT_SPEED = 5        # gait speed at a light touch of the pedal (Freenove 2..10)
+ABORT_CHECK_SECONDS = 0.1 # how often a step in progress re-checks the input and the ultrasonic
 STATUS_SECONDS = 0.5
 BATTERY_EVERY_CYCLES = 4
 
@@ -97,6 +98,34 @@ def shape(value):
     return sign * value ** 1.5
 
 
+class Abort(Exception):
+    """Raised inside a gait cycle to end it mid-stride."""
+
+
+class SleepShim:
+    """Stands in for the time module inside Freenove's control.py. run_gait sleeps
+    10 ms between leg positions; each sleep in the driving thread asks the driver
+    whether to stop, so a 1-3 s gait cycle can end as soon as the pedal lifts."""
+    def __init__(self, real, driver):
+        self._real = real
+        self._driver = driver
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def sleep(self, seconds):
+        self._real.sleep(seconds)
+        d = self._driver
+        if d.step_thread == threading.get_ident():
+            reason = d.should_abort()
+            if reason:
+                raise Abort(reason)
+
+
+def sign(x):
+    return (x > 0) - (x < 0)
+
+
 class Driver:
     def __init__(self, bert, B):
         self.bert = bert
@@ -110,6 +139,14 @@ class Driver:
         self.blocked = False
         self.state = "ready"
         self.cycles = 0
+        self.step_thread = None      # set while a gait cycle runs in the main thread
+        self.step_dir = None
+        self.last_check = 0.0
+        self.last_status = 0.0
+        self.dist = None
+        control = sys.modules.get("control")   # loaded by the real robot only
+        if control is not None:                # make control.py's gait interruptible
+            control.time = SleepShim(time, self)
 
     # ---- input thread ------------------------------------------------------
     def reader(self):
@@ -138,6 +175,39 @@ class Driver:
             pending, self.pending = self.pending, []
         return cmd, age, pending
 
+    def should_abort(self):
+        """Called about every 10 ms during a gait cycle. Returns a reason to stop now, or None."""
+        now = time.time()
+        if now - self.last_check < ABORT_CHECK_SECONDS:
+            return None
+        self.last_check = now
+        cmd, age, _ = self.take_peek()
+        if age > DEADMAN_SECONDS:
+            return "no input (deadman)"
+        f, t, s = shape(cmd["fwd"]), shape(cmd["turn"]), shape(cmd["side"])
+        if f == 0 and t == 0 and s == 0:
+            return "standing"
+        if (sign(f), sign(t), sign(s)) != self.step_dir:
+            return "changing direction"
+        if self.step_dir[0] > 0:
+            self.dist = self.bert.hw.distance()
+            if self.dist is not None and 0 < self.dist < self.B.MIN_OBSTACLE_CM:
+                self.blocked = True
+                return "blocked: obstacle %.0f cm" % self.dist
+        if now - self.last_status > STATUS_SECONDS:
+            self.report()
+        return None
+
+    def take_peek(self):
+        with self.lock:
+            return dict(self.cmd), time.time() - self.last_rx, None
+
+    def report(self):
+        self.last_status = time.time()
+        load, pi = self.bert.last_volts
+        send(state=self.state, dist=None if self.dist is None else round(self.dist), load_v=load, pi_v=pi,
+             low=self.bert.battery_low)
+
     # ---- helpers -----------------------------------------------------------
     def halt(self, state):
         if self.moving and not self.bert.battery_low:
@@ -161,9 +231,7 @@ class Driver:
     def run(self):
         B = self.B
         threading.Thread(target=self.reader, daemon=True).start()
-        last_status = 0.0
         horn_was = 0
-        dist = None
         while not self.eof:
             cmd, age, pending = self.take()
             for c in pending:
@@ -197,8 +265,8 @@ class Driver:
             horn_was = cmd.get("horn", 0)
 
             if fwd > 0:
-                dist = self.bert.hw.distance()
-                self.blocked = dist is not None and 0 < dist < B.MIN_OBSTACLE_CM
+                self.dist = self.bert.hw.distance()
+                self.blocked = self.dist is not None and 0 < self.dist < B.MIN_OBSTACLE_CM
                 if self.blocked:
                     fwd = 0.0
             else:
@@ -206,9 +274,9 @@ class Driver:
 
             if fwd == 0 and turn == 0 and side == 0:
                 if self.moving:
-                    self.halt("blocked: obstacle %.0f cm" % dist if self.blocked else "standing")
+                    self.halt("blocked: obstacle %.0f cm" % self.dist if self.blocked else "standing")
                 elif self.blocked:
-                    self.state = "blocked: obstacle %.0f cm" % dist
+                    self.state = "blocked: obstacle %.0f cm" % self.dist
                 time.sleep(0.03)
             else:
                 try:
@@ -237,18 +305,25 @@ class Driver:
                 self.moving = True
                 self.bert.relaxed = False
                 self.state = ("blocked ahead, " if self.blocked else "") + "driving"
-                self.bert.hw.walk(forward, sideways, turn_val, speed)   # one gait cycle, under a second
+                self.step_dir = (sign(forward), sign(turn_val), sign(sideways))
+                self.step_thread = threading.get_ident()
+                try:
+                    self.bert.hw.walk(forward, sideways, turn_val, speed)   # one gait cycle, 1-3 s
+                except Abort as why:
+                    self.step_thread = None
+                    reason = str(why)
+                    if reason.startswith("no input"):
+                        log("No input for over %.1fs: stopped mid-step." % DEADMAN_SECONDS)
+                    self.halt(reason)            # feet back under him before the next step
+                finally:
+                    self.step_thread = None
                 self.cycles += 1
                 self.bert.touch()
 
-            now = time.time()
-            if now - last_status > STATUS_SECONDS:
-                last_status = now
-                if not self.moving or dist is None:
-                    dist = self.bert.hw.distance()
-                load, pi = self.bert.last_volts
-                send(state=self.state, dist=None if dist is None else round(dist), load_v=load, pi_v=pi,
-                     low=self.bert.battery_low)
+            if time.time() - self.last_status > STATUS_SECONDS:
+                if not self.moving or self.dist is None:
+                    self.dist = self.bert.hw.distance()
+                self.report()
 
 
 def main():

@@ -23,7 +23,8 @@ the MCP server uses (`LARGE_BERT_MCP.md`, step 4).
 | `S` / `R` key | Stand up / relax the legs |
 | `Esc` or close the window | Stop, relax, disconnect |
 
-Let go of both pedals and he stops at the end of the current step (under a second).
+Let go of both pedals and he stops mid-stride, within about half a second, and puts his feet back under him.
+A step takes 1 to 3 seconds, so changing direction also cuts the current step short and starts a new one.
 
 ## Setup
 
@@ -50,9 +51,9 @@ can keep running). `--no-robot` only shows the wheel inputs.
 ## Safety
 
 - **Deadman:** if the Pi gets no input for 0.5 s (program frozen, wheel unplugged, Wi-Fi
-  hiccup), he stops and stands.
+  hiccup), he stops mid-stride and stands. Tested on the real robot: stopped 0.5 s after input ended.
 - **Connection lost or window closed:** he relaxes and the lights go off.
-- **Obstacle:** forward is blocked while the ultrasonic sees something closer than
+- **Obstacle:** checked 10 times a second while stepping forward. Forward is blocked while the ultrasonic sees something closer than
   `MIN_OBSTACLE_CM` (25 cm). Turning, reversing and crab-walking still work so you can
   back out. The dashboard turns red and shows the distance.
 - **Speed caps:** step length up to `MAX_STEP_LENGTH` (30, about 10 cm a step) and gait speed
