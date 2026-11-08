@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+cat_log/
+cat_model/
+backups/
+large_bert_check.jpg
+.large_bert_token

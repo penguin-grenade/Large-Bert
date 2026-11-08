@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "large-bert": {
+      "type": "stdio",
+      "command": "ssh",
+      "args": [
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
+        "pi@192.168.0.119",
+        "cd ~/Freenove_Big_Hexapod_Robot_Kit_for_Raspberry_pi/Code/Server && exec sudo -n /home/pi/bert-venv/bin/python large_bert_mcp.py"
+      ]
+    }
+  }
+}
