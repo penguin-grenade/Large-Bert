@@ -65,8 +65,10 @@ can keep running). `--no-robot` only shows the wheel inputs.
 - **Obstacle:** checked 10 times a second while stepping forward. Forward is blocked while the ultrasonic sees something closer than
   `MIN_OBSTACLE_CM` (25 cm). Turning, reversing and crab-walking still work so you can
   back out. The dashboard turns red and shows the distance.
-- **Speed caps:** step length up to `MAX_STEP_LENGTH` (30, about 10 cm a step) and gait speed
-  up to `MAX_SPEED` (8), both from `bert_config.py`. Reverse and sideways are capped at 60%.
+- **Speed caps:** with the pedal floored, step length 35 (about 12 cm a step) and gait speed 10,
+  Freenove's own maximums (`DRIVE_MAX_STEP`, `DRIVE_MAX_SPEED` in `bert_drive.py`). That's
+  roughly twice as fast as Claude's MCP limits in `bert_config.py`, which stay as they were.
+  Reverse and sideways are capped at 60%. Fast walking pulls the battery down harder.
 - **Battery:** the same cut-offs as the MCP server and patrol (`patrol_config.py`), checked
   every few steps. Below them he relaxes and won't walk until he's charged.
 - **Gentle start:** the PC won't connect while a pedal reads as pressed, and small

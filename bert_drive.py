@@ -15,8 +15,8 @@ Safety (on top of everything in large_bert_mcp.Bert: battery cut-offs,
 idle relax, quiet hours for the horn):
   * deadman: no input line for DEADMAN_SECONDS -> stop and stand still
   * SSH drops or the PC client quits -> stdin closes -> relax, lights off
-  * step length and gait speed are capped (bert_config MAX_STEP_LENGTH /
-    MAX_SPEED, reverse and crab-walk at REVERSE_FRACTION of that)
+  * step length and gait speed are capped (DRIVE_MAX_STEP / DRIVE_MAX_SPEED,
+    Freenove's own limits), reverse and crab-walk at REVERSE_FRACTION of that
   * forward is blocked while the ultrasonic sees something closer than
     MIN_OBSTACLE_CM (turning, crab-walking and reversing still work)
   * refuses to start while large_bert_mcp.py or cat_patrol.py holds the robot
@@ -45,6 +45,8 @@ os.dup2(2, 1)
 DEADMAN_SECONDS = 0.5     # no input for this long: stop
 REVERSE_FRACTION = 0.6    # reverse and crab-walk are capped at this share of full speed
 DEADZONE = 0.08           # inputs smaller than this count as zero
+DRIVE_MAX_SPEED = 10      # gait speed with the pedal floored. Freenove's top speed; Claude's MCP stays at bert_config.MAX_SPEED
+DRIVE_MAX_STEP = 35       # step length with the pedal floored. Freenove's longest step (MCP uses MAX_STEP_LENGTH)
 MIN_GAIT_SPEED = 5        # gait speed at a light touch of the pedal (Freenove 2..10)
 VIDEO_FPS = 12            # head camera frames sent to the PC per second
 VIDEO_SIZE = (640, 480)
@@ -363,14 +365,14 @@ class Driver:
                     self.state = "battery low"
                     continue
                 cap = REVERSE_FRACTION if fwd < 0 else 1.0
-                forward = int(round(fwd * B.MAX_STEP_LENGTH * cap))
-                sideways = int(round(side * B.MAX_STEP_LENGTH * REVERSE_FRACTION))
+                forward = int(round(fwd * DRIVE_MAX_STEP * cap))
+                sideways = int(round(side * DRIVE_MAX_STEP * REVERSE_FRACTION))
                 turn_val = int(round(turn * 10))
                 effort = max(abs(fwd), abs(turn), abs(side))
-                speed = int(round(MIN_GAIT_SPEED + effort * (B.MAX_SPEED - MIN_GAIT_SPEED)))
+                speed = int(round(MIN_GAIT_SPEED + effort * (DRIVE_MAX_SPEED - MIN_GAIT_SPEED)))
                 if fwd < 0 or (side and not fwd):
-                    speed = min(speed, int(round(B.MAX_SPEED * REVERSE_FRACTION + 1)))
-                speed = int(clamp(speed, 2, B.MAX_SPEED))
+                    speed = min(speed, int(round(DRIVE_MAX_SPEED * REVERSE_FRACTION + 1)))
+                speed = int(clamp(speed, 2, DRIVE_MAX_SPEED))
                 if forward == 0 and sideways == 0 and turn_val == 0:
                     time.sleep(0.03)
                     continue
@@ -432,7 +434,7 @@ def main():
     except Exception:
         pass
     send(state="ready", msg="Large Bert drive ready (%s)." % ("simulated" if args.sim else "real robot"),
-         max_step=B.MAX_STEP_LENGTH, max_speed=B.MAX_SPEED, obstacle_cm=B.MIN_OBSTACLE_CM,
+         max_step=DRIVE_MAX_STEP, max_speed=DRIVE_MAX_SPEED, obstacle_cm=B.MIN_OBSTACLE_CM,
          load_v=bert.last_volts[0], pi_v=bert.last_volts[1])
     log("Ready (%s)." % ("simulated" if args.sim else "real robot"))
     video_stop = threading.Event()
