@@ -59,11 +59,12 @@ class Robot:
         """Cut power to all servos, head included. Digital servos hold position without it."""
         self.control.servo_power_disable.on()
 
-    def walk(self, forward=0, sideways=0, turn=0, speed=C.PATROL_SPEED):
-        """One gait cycle. turn is -10..10 degrees, positive = left after TURN_SIGN is set."""
+    def walk(self, forward=0, sideways=0, turn=0, speed=C.PATROL_SPEED, lift=40):
+        """One gait cycle. turn is -10..10 degrees, positive = left after TURN_SIGN is set.
+        lift is how high each foot rises, in mm (Freenove default 40)."""
         self.power_on()
         self.control.run_gait(["CMD_MOVE", "1", str(int(sideways)), str(int(forward)),
-                               str(int(speed)), str(int(clamp(turn, -10, 10) * C.TURN_SIGN))])
+                               str(int(speed)), str(int(clamp(turn, -10, 10) * C.TURN_SIGN))], Z=int(lift))
 
     def stand(self):
         self.walk()

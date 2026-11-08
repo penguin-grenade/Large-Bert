@@ -133,9 +133,24 @@ class Hardware:
         self.control = self.robot.control
         self._home_points = copy.deepcopy(self.control.body_points)
         self._home_height = self.control.body_height
+        self.lift = getattr(B, "STEP_LIFT_MM", 40)
 
     def walk(self, forward, sideways, turn, speed):
-        self.robot.walk(forward=forward, sideways=sideways, turn=turn, speed=speed)
+        self.robot.walk(forward=forward, sideways=sideways, turn=turn, speed=speed, lift=self.lift)
+
+    def set_height(self, height_mm, lift_mm):
+        """Feet height_mm below the body (taller = more ground clearance). Kept for later stands and walks."""
+        self.lift = lift_mm
+        start = -self._home_height
+        self.stand()                         # stand at the current height first (wakes the servos)
+        steps = max(1, int(round(abs(height_mm - start) / 5.0)))
+        for i in range(1, steps + 1):        # rise or sink about 5 mm at a time, not in one jump
+            h = start + (height_mm - start) * i / steps
+            for point in self._home_points:
+                point[2] = -h
+            self._home_height = -h
+            self.stand()
+            time.sleep(0.1)                  # stand() returns at once; give the servos time to follow
 
     def stand(self):
         self.control.body_points = copy.deepcopy(self._home_points)
@@ -210,6 +225,9 @@ class FakeHardware:
 
     def body_tilt(self, roll, pitch, yaw):
         log("[sim] body tilt %s %s %s" % (roll, pitch, yaw))
+
+    def set_height(self, height_mm, lift_mm):
+        log("[sim] body height %s mm, foot lift %s mm" % (height_mm, lift_mm))
 
 
 class LockedHardware:
@@ -464,6 +482,20 @@ class Bert:
         self.touch()
         return "Body tilted roll %d, pitch %d, yaw %d. The next step or stand_up levels it again." % (roll, pitch, yaw)
 
+    def set_height(self, height_mm, lift_mm):
+        self.require_can_move()
+        lo, hi = getattr(B, "BODY_HEIGHT_RANGE_MM", (25, 70))
+        llo, lhi = getattr(B, "STEP_LIFT_RANGE_MM", (20, 60))
+        height_mm = int(clamp(height_mm, lo, hi))
+        lift_mm = int(clamp(lift_mm, llo, lhi))
+        self.hw.set_height(height_mm, lift_mm)
+        self.height_mm, self.lift_mm = height_mm, lift_mm
+        self.relaxed = False
+        self.touch()
+        return ("Standing with the feet %d mm below the body (normal is %d) and lifting each foot %d mm "
+                "when walking. Walks, turns and stand_up keep this until it's changed or the server restarts."
+                % (height_mm, getattr(B, "BODY_HEIGHT_MM", 25), lift_mm))
+
     # ---- head, camera, vision -------------------------------------------
     def look(self, pan, tilt):
         self.require_no_patrol()
@@ -554,6 +586,8 @@ class Bert:
             "battery_low": self.battery_low,
             "distance_ahead_cm": None if self.patrol_running() else self.hw.distance(),
             "legs": "relaxed" if self.relaxed else "standing",
+            "body_height_mm": getattr(self, "height_mm", getattr(B, "BODY_HEIGHT_MM", 25)),
+            "step_lift_mm": getattr(self, "lift_mm", getattr(B, "STEP_LIFT_MM", 40)),
             "head_servos": {"pan": self.pan, "tilt": self.tilt},
             "patrol_running": self.patrol_running(),
             "movement_allowed": not self.no_move,
@@ -710,6 +744,15 @@ async def stop() -> str:
 async def stand_up() -> str:
     """Stand up straight with the body level (also undoes body_tilt)."""
     return await call(BERT.stand_up)
+
+
+@mcp.tool()
+async def set_height(height_mm: int = 25, step_lift_mm: int = 40) -> str:
+    """Stand taller or lower. height_mm: how far the feet sit below the body, 25 (normal) .. 70.
+    Use about 50-60 outside on grass or gravel for more ground clearance; taller is a little less stable.
+    step_lift_mm: how high each foot lifts while walking, 20..60 (normal 40). The setting stays for later
+    walks, turns and stand_up until changed. set_height(25, 40) goes back to normal."""
+    return await call(BERT.set_height, height_mm, step_lift_mm)
 
 
 @mcp.tool()

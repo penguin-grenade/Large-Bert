@@ -24,6 +24,10 @@ BATTERY_RECOVER_MARGIN_V = 0.2  # after a low-battery stop, need this much above
 # ---- Head, body, lights, buzzer -------------------------------------------
 PAN_RANGE = (50, 180)        # same limits as the Freenove server (90 = straight ahead)
 TILT_RANGE = (50, 180)       # tilt servo is channel 0, which Freenove limits to 50..180
+BODY_HEIGHT_MM = 25          # normal standing height: how far the feet sit below the body (Freenove default)
+BODY_HEIGHT_RANGE_MM = (25, 70)  # set_height limits; 50-60 gives more ground clearance outside
+STEP_LIFT_MM = 40            # how high each foot lifts while walking (Freenove default)
+STEP_LIFT_RANGE_MM = (20, 60)
 BODY_TILT_LIMIT = 15         # degrees of roll/pitch/yaw for body_tilt (Freenove's own limit)
 MAX_BEEPS = 5
 MAX_BEEP_SECONDS = 0.5       # longest single beep
