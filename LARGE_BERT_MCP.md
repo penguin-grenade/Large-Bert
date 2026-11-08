@@ -89,6 +89,7 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 | `snapshot` | Photo from the head camera. Works during the patrol |
 | `who_is_there` | Runs the cat detector: orange intruder, one of yours, or unsure |
 | `body_tilt` | Lean the body up to 15 degrees |
+| `set_height` | Stand taller (feet 25 to 70 mm below the body) and lift the feet higher, for grass and gravel outside |
 | `lights` / `beep` | LEDs by colour name or hex, and short beeps |
 | `patrol_start` / `patrol_stop` / `patrol_status` | The cat patrol. It starts as a dry run unless Claude passes `dry_run=false` |
 
