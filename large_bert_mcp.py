@@ -909,8 +909,49 @@ def self_check(bert):
     print("Saved a camera picture to large_bert_check.jpg")
 
 
+def stop_old_servers(timeout=5.0):
+    """End any other large_bert_mcp.py left over from an earlier connection: it holds the servos and camera,
+    and the new server would hang waiting for them. Linux only (reads /proc); does nothing elsewhere."""
+    if not os.path.isdir("/proc"):
+        return
+    me = {os.getpid(), os.getppid()}
+    old = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) in me:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % entry, "rb") as f:
+                args = f.read().split(b"\0")
+        except OSError:
+            continue
+        # the python process itself, not the sudo or bash wrapped around it
+        if len(args) > 1 and b"python" in os.path.basename(args[0]) and \
+                any(os.path.basename(a) == b"large_bert_mcp.py" for a in args[1:]) and b"--sim" not in args:
+            old.append(int(entry))
+    if not old:
+        return
+    log("Stopping an old Large Bert server left running (pid %s)." % ", ".join(map(str, old)))
+    for pid in old:
+        try:
+            os.kill(pid, signal.SIGTERM)       # its handler relaxes the legs and turns the lights off
+        except OSError:
+            pass
+    deadline = time.time() + timeout
+    while time.time() < deadline and any(os.path.exists("/proc/%d" % pid) for pid in old):
+        time.sleep(0.1)
+    for pid in old:
+        if os.path.exists("/proc/%d" % pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    time.sleep(0.5)                            # let the camera and GPIO be released
+
+
 def main():
     global BERT
+    if not ARGS.sim:
+        stop_old_servers()
     BERT = Bert(sim=ARGS.sim, no_move=ARGS.no_move)
     atexit.register(BERT.close)
 
