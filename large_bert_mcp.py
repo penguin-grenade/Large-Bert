@@ -150,6 +150,7 @@ class Hardware:
                 point[2] = -h
             self._home_height = -h
             self.stand()
+            time.sleep(0.1)                  # stand() returns at once; give the servos time to follow
 
     def stand(self):
         self.control.body_points = copy.deepcopy(self._home_points)
