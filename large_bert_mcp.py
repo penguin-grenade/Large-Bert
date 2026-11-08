@@ -140,11 +140,16 @@ class Hardware:
 
     def set_height(self, height_mm, lift_mm):
         """Feet height_mm below the body (taller = more ground clearance). Kept for later stands and walks."""
-        for point in self._home_points:
-            point[2] = -height_mm
-        self._home_height = -height_mm
         self.lift = lift_mm
-        self.stand()
+        start = -self._home_height
+        self.stand()                         # stand at the current height first (wakes the servos)
+        steps = max(1, int(round(abs(height_mm - start) / 5.0)))
+        for i in range(1, steps + 1):        # rise or sink about 5 mm at a time, not in one jump
+            h = start + (height_mm - start) * i / steps
+            for point in self._home_points:
+                point[2] = -h
+            self._home_height = -h
+            self.stand()
 
     def stand(self):
         self.control.body_points = copy.deepcopy(self._home_points)
