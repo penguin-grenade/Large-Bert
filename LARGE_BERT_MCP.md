@@ -92,11 +92,13 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 | `set_height` | Stand taller (feet 25 to 70 mm below the body) and lift the feet higher, for grass and gravel outside |
 | `lights` / `beep` | LEDs by colour name or hex, and short beeps |
 | `patrol_start` / `patrol_stop` / `patrol_status` | The cat patrol. It starts as a dry run unless Claude passes `dry_run=false` |
+| `listen` | Hear what people near Bert say (offline speech-to-text on the Pi). See [VOICE.md](VOICE.md) |
 
 ## Safety limits (in `bert_config.py`)
 - Each walk or turn is capped at **10 gait cycles and 25 seconds**, speed 8, step length 30.
 - Going forward, he stops if the ultrasonic sees something **closer than 25 cm**.
 - **`stop`** interrupts a walk between steps. Pressing **Esc** in Claude Code does too.
+- Saying **"Bert, stop"** near his microphone stops him on the Pi, without waiting on Claude ([VOICE.md](VOICE.md)).
 - The battery is checked before every move and every 30 seconds. **Below 5.0 V (load) or
   6.4 V (Pi)** he relaxes and refuses to move until it's 0.2 V above the cut-off. These
   values come from `patrol_config.py`.
