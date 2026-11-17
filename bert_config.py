@@ -18,9 +18,10 @@ MIN_OBSTACLE_CM = 25         # refuse to step forward when the ultrasonic sees s
 # ---- cruise: one long lidar-guided walk forward ------------------------------
 CRUISE_MAX_CM = 400          # longest single cruise
 CRUISE_MAX_STEPS = 40        # ...and never more gait cycles than this
-CRUISE_SPEED = 9             # default cruise gait speed (2..MAX_SPEED)
+CRUISE_SPEED = 10            # default cruise gait speed (2..MAX_SPEED)
+CRUISE_STEP_LENGTH = 35      # cruise stride: Freenove's longest (walk stays at MAX_STEP_LENGTH)
 CRUISE_MAX_SECONDS = 120     # ...or longer than this
-CRUISE_STOP_CM = 40          # default: stop when something in his path is this close (from the lidar)
+CRUISE_STOP_CM = 45          # default: stop when something in his path is this close (from the lidar)
 CRUISE_MIN_STOP_CM = 30      # Claude can't ask for less than this
 
 # ---- Idle and battery watchdog --------------------------------------------

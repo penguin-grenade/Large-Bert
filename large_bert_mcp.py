@@ -541,12 +541,13 @@ class Bert:
 
     def cruise(self, distance_cm, speed, stop_cm, follow_walls):
         """One long walk forward, guided by the lidar every step."""
-        per_step = getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4)
+        length = getattr(B, "CRUISE_STEP_LENGTH", 30)
+        per_step = getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4) * length / 30.0
         distance_cm = clamp(distance_cm, per_step, B.CRUISE_MAX_CM)
         steps = int(min(math.ceil(distance_cm / per_step), B.CRUISE_MAX_STEPS))
         stop_cm = clamp(stop_cm, B.CRUISE_MIN_STOP_CM, 300)
         speed = int(clamp(speed, 2, B.MAX_SPEED))
-        done, reason, notes = self._gait(steps, forward=30, speed=speed, follow_walls=follow_walls,
+        done, reason, notes = self._gait(steps, forward=length, speed=speed, follow_walls=follow_walls,
                                          max_seconds=B.CRUISE_MAX_SECONDS, ahead_stop_cm=stop_cm, require_lidar=True)
         cm = done * per_step
         text = "Cruised %d of %d steps, about %.0f cm (%.0f in): %s." % (done, steps, cm, cm / 2.54, reason)
@@ -915,10 +916,10 @@ async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int =
 @mcp.tool()
 async def cruise(distance_cm: int = 300, speed: int = B.CRUISE_SPEED, stop_cm: int = B.CRUISE_STOP_CM,
                  follow_walls: bool = True) -> str:
-    """Walk forward in one go, up to 400 cm (40 steps, 120 s). speed 2..10, default 9, with the lidar checking before every step.
+    """Walk forward in one go, up to 400 cm (40 steps, 120 s). speed 2..10, default 10, with his longest stride, with the lidar checking before every step.
     Use it for long straight runs such as a hallway, instead of many short walks. follow_walls=True steers
     each step to stay parallel to and centred between straight walls (fixes his left drift).
-    Stops by itself when something in his path is closer than stop_cm (30..300, default 40, measured from
+    Stops by itself when something in his path is closer than stop_cm (30..300, default 45, measured from
     the lidar on his back), something comes within a few cm of his side feet, the ultrasonic sees
     something under 25 cm, someone says "Bert, stop" or stop is called, or the battery is low.
     Distance is estimated from step count and can be off on rugs. Needs the lidar."""
