@@ -20,6 +20,8 @@ These files go in the robot's `Code/Server` folder on the Pi, next to Freenove's
 | `bert_drive.py` | Live drive listener: lets the PC's steering wheel and pedals walk him, with a deadman stop, speed caps and the ultrasonic obstacle stop |
 | `bert_wheel.py` | Runs on the **Windows PC**, not the Pi: reads the wheel/pedals with pygame and drives Bert over SSH |
 | `WHEEL_DRIVE.md` | Guide for driving him with the wheel |
+| `bert_lidar.py` | Reads the RPLIDAR C1 on his back for the `lidar_scan` tool; runs on its own too. See [LIDAR.md](LIDAR.md) |
+| `LIDAR.md` | Guide for the lidar |
 
 Not in the repo: `bert_wheel.json` (the PC's saved wheel setup), the reference cat photos (`cats/`), the models (`cat_model/`), and patrol logs.
 

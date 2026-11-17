@@ -93,6 +93,7 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 | `lights` / `beep` | LEDs by colour name or hex, and short beeps |
 | `patrol_start` / `patrol_stop` / `patrol_status` | The cat patrol. It starts as a dry run unless Claude passes `dry_run=false` |
 | `listen` | Hear what people near Bert say (offline speech-to-text on the Pi). See [VOICE.md](VOICE.md) |
+| `lidar_scan` | Closest thing in 8 directions all round him from the lidar, with an optional top-down map. See [LIDAR.md](LIDAR.md) |
 
 ## Safety limits (in `bert_config.py`)
 - Each walk or turn is capped at **10 gait cycles and 25 seconds**, speed 8, step length 30.
