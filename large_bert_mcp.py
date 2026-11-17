@@ -902,7 +902,7 @@ async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int =
                follow_walls: bool = False) -> str:
     """Walk a few gait cycles. forward: step length -30..30 (negative = backwards).
     sideways: -30..30 (positive = crab-walk right, negative = left). steps: 1..10 gait cycles
-    (each about 10 cm (4 in) at length 30, scaling with length). speed: 2 (slow) .. 8.
+    (each about 10 cm (4 in) at length 30, scaling with length). speed: 2 (slow) .. 10.
     The lidar watches all the way: before every step it checks his path and both sides, and stops him
     if something is in the way or about to brush his legs. Also stops for the ultrasonic under 25 cm
     going forward, a stop command, low battery, or the time limit. The result ends with the closest
@@ -913,9 +913,9 @@ async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int =
 
 
 @mcp.tool()
-async def cruise(distance_cm: int = 200, speed: int = B.DEFAULT_SPEED, stop_cm: int = B.CRUISE_STOP_CM,
+async def cruise(distance_cm: int = 300, speed: int = B.CRUISE_SPEED, stop_cm: int = B.CRUISE_STOP_CM,
                  follow_walls: bool = True) -> str:
-    """Walk forward in one go, up to 400 cm (40 steps, 90 s), with the lidar checking before every step.
+    """Walk forward in one go, up to 400 cm (40 steps, 120 s). speed 2..10, default 9, with the lidar checking before every step.
     Use it for long straight runs such as a hallway, instead of many short walks. follow_walls=True steers
     each step to stay parallel to and centred between straight walls (fixes his left drift).
     Stops by itself when something in his path is closer than stop_cm (30..300, default 40, measured from

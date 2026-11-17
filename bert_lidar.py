@@ -415,10 +415,7 @@ def in_the_way(points, forward, sideways, ahead_stop_cm=None):
     return None
 
 
-def _fit_wall(pts):
-    """Least-squares y = a + b*x through one side's points; returns (a, b) or None."""
-    if len(pts) < 12:
-        return None
+def _line(pts):
     n = float(len(pts))
     mx = sum(p[0] for p in pts) / n
     my = sum(p[1] for p in pts) / n
@@ -426,9 +423,35 @@ def _fit_wall(pts):
     if sxx < 200:                                    # points bunched up: not a wall
         return None
     b = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx
-    a = my - b * mx
-    spread = sum((p[1] - a - b * p[0]) ** 2 for p in pts) / n
-    return (a, b) if spread < 36 else None           # more than ~6 cm scatter: furniture, not a wall
+    return my - b * mx, b
+
+
+def _fit_wall(pts):
+    """Straight line y = a + b*x through one side's wall, or None. Real walls have gaps and things in
+    front of them (doorways, a closet, a box), so it tries lines through pairs of points, keeps the
+    one that most points lie on (within 4 cm), and refits on those. The wall must hold at least 15
+    points, 30% of that side, and run at least 30 cm along him."""
+    if len(pts) < 15:
+        return None
+    import random
+    rng = random.Random(len(pts))                    # repeatable
+    best = []
+    for _ in range(80):
+        p, q = rng.sample(pts, 2)
+        if abs(q[0] - p[0]) < 15:
+            continue
+        b = (q[1] - p[1]) / (q[0] - p[0])
+        if abs(b) > 0.6:                             # more than ~30 deg off his heading: not a hall wall
+            continue
+        a = p[1] - b * p[0]
+        inliers = [r for r in pts if abs(r[1] - a - b * r[0]) < 4.0]
+        if len(inliers) > len(best):
+            best = inliers
+    if len(best) < 15 or len(best) < 0.3 * len(pts):
+        return None
+    if max(r[0] for r in best) - min(r[0] for r in best) < 30:
+        return None
+    return _line(best)
 
 
 def wall_steer(points):

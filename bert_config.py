@@ -9,7 +9,7 @@ from patrol_config.py so the patrol and the MCP server always agree.
 MAX_STEPS_PER_CALL = 10      # one walk/turn call never does more gait cycles than this
 MAX_MOVE_SECONDS = 25        # ...and never runs longer than this
 DEFAULT_SPEED = 6            # Freenove speed 2 (slow) .. 10 (fast)
-MAX_SPEED = 8                # Claude can't ask for more than this
+MAX_SPEED = 10               # Freenove's top speed (the wheel drive has used it since PR #4)
 MAX_STEP_LENGTH = 30         # Freenove allows 35; a bit less is kinder to the legs
 MAX_TURN_DEGREES = 180       # biggest single turn() call
 CM_PER_STEP_AT_LENGTH_30 = 10.4  # measured: 5 cycles at length 30 went 52 cm (20.5 in); scales with length
@@ -18,7 +18,8 @@ MIN_OBSTACLE_CM = 25         # refuse to step forward when the ultrasonic sees s
 # ---- cruise: one long lidar-guided walk forward ------------------------------
 CRUISE_MAX_CM = 400          # longest single cruise
 CRUISE_MAX_STEPS = 40        # ...and never more gait cycles than this
-CRUISE_MAX_SECONDS = 90      # ...or longer than this
+CRUISE_SPEED = 9             # default cruise gait speed (2..MAX_SPEED)
+CRUISE_MAX_SECONDS = 120     # ...or longer than this
 CRUISE_STOP_CM = 40          # default: stop when something in his path is this close (from the lidar)
 CRUISE_MIN_STOP_CM = 30      # Claude can't ask for less than this
 
