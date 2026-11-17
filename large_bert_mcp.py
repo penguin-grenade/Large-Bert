@@ -69,7 +69,7 @@ try:
     import patrol_config as C
 except ImportError:                 # patrol files not copied: use the same fixed values
     class C:
-        MIN_LOAD_BATTERY_V = 5.0
+        MIN_LOAD_BATTERY_V = 6.4
         MIN_PI_BATTERY_V = 6.4
         QUIET_HOURS = (22, 7)
         TURN_SIGN = 1
@@ -83,7 +83,7 @@ except ImportError:                 # patrol files not copied: use the same fixe
         CAMERA_SIZE = (640, 480)
         MODE = "sentry"
 
-MIN_LOAD_V = getattr(C, "MIN_LOAD_BATTERY_V", 5.0)
+MIN_LOAD_V = getattr(C, "MIN_LOAD_BATTERY_V", 6.4)
 MIN_PI_V = getattr(C, "MIN_PI_BATTERY_V", 6.4)
 
 
@@ -375,6 +375,10 @@ class Bert:
             self.battery_low = False
         return not self.battery_low
 
+    def battery_getting_low(self):
+        load = self.last_volts[0]
+        return bool(load is not None and load < getattr(B, "BATTERY_WARN_V", 7.0))
+
     def _voice_stop(self, heard):
         """Called from the ears thread when someone says "Bert, stop"."""
         self.voice_stopped = True
@@ -533,7 +537,9 @@ class Bert:
                 notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
         if "around_cm" in notes:
             text += " Lidar now, closest cm: %s." % notes["around_cm"]
-        elif notes["lidar"] != "on":
+        if self.battery_getting_low():
+            text += " Battery getting low (%s V): expect weaker steps and more drift; charge soon." % self.last_volts[0]
+        if "around_cm" not in notes and notes["lidar"] != "on":
             text += " Lidar %s, only the ultrasonic watched." % notes["lidar"]
         if notes.get("lidar_gaps"):
             text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
@@ -556,6 +562,8 @@ class Bert:
                 notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
         if "around_cm" in notes:
             text += " Lidar now, closest cm: %s." % notes["around_cm"]
+        if self.battery_getting_low():
+            text += " Battery getting low (%s V): expect weaker steps and more drift; charge soon." % self.last_volts[0]
         if notes.get("lidar_gaps"):
             text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
         return text
@@ -746,6 +754,7 @@ class Bert:
             "battery_volts": {"load": self.last_volts[0], "pi": self.last_volts[1]},
             "battery_cutoffs_volts": {"load": MIN_LOAD_V, "pi": MIN_PI_V},
             "battery_low": self.battery_low,
+            "battery_getting_low": self.battery_getting_low(),
             "distance_ahead_cm": None if self.patrol_running() else self.hw.distance(),
             "legs": "relaxed" if self.relaxed else "standing",
             "body_height_mm": getattr(self, "height_mm", getattr(B, "BODY_HEIGHT_MM", 25)),
