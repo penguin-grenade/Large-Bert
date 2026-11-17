@@ -393,14 +393,16 @@ def to_xy(points):
     return out
 
 
-def in_the_way(points, forward, sideways):
+def in_the_way(points, forward, sideways, ahead_stop_cm=None):
     """For a walk step (forward/sideways step lengths, + = ahead / right), return a short reason if
     something is about to touch him, else None. Checks the strip he is moving into (his width going
-    forward or back, his length going sideways) and right beside his feet (the door-frame case)."""
+    forward or back, his length going sideways) and right beside his feet (the door-frame case).
+    ahead_stop_cm (going forward): stop once something in his path is closer than this to the lidar."""
     xy = to_xy(points)
     hl, hw, la = BODY_HALF_LENGTH_CM, BODY_HALF_WIDTH_CM, LOOKAHEAD_CM
+    ahead_limit = max(hl + la, ahead_stop_cm or 0)
     for x, y in xy:
-        if forward > 0 and hl * 0.5 < x < hl + la and abs(y) < hw:
+        if forward > 0 and hl * 0.5 < x < ahead_limit and abs(y) < hw:
             return "something %.0f cm ahead in his path (lidar)" % x
         if forward < 0 and -(hl + la) < x < -hl * 0.5 and abs(y) < hw:
             return "something %.0f cm behind in his path (lidar)" % -x
@@ -445,9 +447,11 @@ def wall_steer(points):
         offset = (left[0] + right[0]) / 2.0          # cm the middle of the hall is to his left
     turn = heading + 0.25 * offset
     turn = max(-FOLLOW_MAX_TURN_DEG, min(FOLLOW_MAX_TURN_DEG, turn))
-    note = "walls %s, %s off parallel, %.0f cm %s of the middle" % (
-        "both sides" if left and right else ("left only" if left else "right only"),
-        "%.0f deg" % abs(heading), abs(offset), "right" if offset > 0 else "left")
+    if left and right:
+        note = "walls both sides, last step %.0f deg off parallel and %.0f cm %s of the middle" % (
+            abs(heading), abs(offset), "right" if offset > 0 else "left")
+    else:
+        note = "wall on the %s only, last step %.0f deg off parallel" % ("left" if left else "right", abs(heading))
     return turn, note
 
 

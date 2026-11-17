@@ -41,6 +41,11 @@ thread keeps the newest readings, and before each gait cycle the walk checks the
   each side; furniture that isn't a straight line is ignored. This replaces stopping to correct
   his drift to the left.
 
+**`cruise(distance_cm, speed, stop_cm, follow_walls)`** is one long walk forward (up to 400 cm,
+40 steps, 90 s) with all of the above every step and wall-following on by default. It stops by
+itself when something in his path is closer than `stop_cm` to the lidar (default 40, at least 30).
+Use it for a hallway instead of many short walks. Its limits are in `bert_config.py`.
+
 Bert's size is set by `BODY_HALF_LENGTH_CM` (22) and `BODY_HALF_WIDTH_CM` (24), measured from the
 lidar to his foot tips while standing. They're estimates: measure him and adjust.
 

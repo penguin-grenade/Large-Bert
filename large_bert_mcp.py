@@ -2,7 +2,7 @@
 """Large Bert's MCP server: lets Claude drive the Freenove Big Hexapod.
 
 Tools: status, walk, turn, stop, stand_up, relax, look, snapshot, who_is_there,
-body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen, lidar_scan.
+body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen, lidar_scan, cruise.
 
 Safety (settings in bert_config.py, battery cut-offs from patrol_config.py):
   * every walk/turn is capped in steps and seconds, and checks the stop flag,
@@ -444,13 +444,17 @@ class Bert:
             log("Walking without the lidar: %s" % exc)
             return None
 
-    def _gait(self, cycles, forward=0, sideways=0, turn=0, speed=B.DEFAULT_SPEED, follow_walls=False):
+    def _gait(self, cycles, forward=0, sideways=0, turn=0, speed=B.DEFAULT_SPEED, follow_walls=False,
+              max_seconds=None, ahead_stop_cm=None, require_lidar=False):
         """Run gait cycles with all the checks. Returns (cycles done, reason, notes).
         While walking, the lidar streams: before every cycle the newest readings are checked for
         anything in his path or brushing his sides, and with follow_walls the turn is set each cycle
         to keep him parallel to and centred between the walls."""
         self.require_can_move()
         lidar = self._walk_lidar() if (forward or sideways) else None
+        if require_lidar and lidar is None:
+            raise Refused("this needs the lidar, which isn't working (%s)" % (self.lidar_error or "not available"))
+        max_seconds = max_seconds or B.MAX_MOVE_SECONDS
         notes = {"lidar": "on" if lidar else "off (%s)" % (self.lidar_error or "not available"),
                  "steered_deg": 0.0}
         self.stop_event.clear()
@@ -463,8 +467,8 @@ class Bert:
             if self.stop_event.is_set():
                 reason = "stopped by voice (someone said stop)" if self.voice_stopped else "stopped by stop command"
                 break
-            if time.time() - start > B.MAX_MOVE_SECONDS:
-                reason = "time limit (%ds) reached" % B.MAX_MOVE_SECONDS
+            if time.time() - start > max_seconds:
+                reason = "time limit (%ds) reached" % max_seconds
                 break
             if forward > 0:
                 distance = self.hw.distance()
@@ -480,8 +484,11 @@ class Bert:
                 points = lidar.latest()
                 if points is None:
                     notes["lidar_gaps"] = notes.get("lidar_gaps", 0) + 1
+                    if require_lidar and notes["lidar_gaps"] >= 2:
+                        reason = "stopped: lost the lidar readings"
+                        break
                 else:
-                    blocked = bert_lidar.in_the_way(points, forward, sideways)
+                    blocked = bert_lidar.in_the_way(points, forward, sideways, ahead_stop_cm)
                     if blocked:
                         reason = "stopped: " + blocked
                         break
@@ -528,6 +535,26 @@ class Bert:
             text += " Lidar now, closest cm: %s." % notes["around_cm"]
         elif notes["lidar"] != "on":
             text += " Lidar %s, only the ultrasonic watched." % notes["lidar"]
+        if notes.get("lidar_gaps"):
+            text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
+        return text
+
+    def cruise(self, distance_cm, speed, stop_cm, follow_walls):
+        """One long walk forward, guided by the lidar every step."""
+        per_step = getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4)
+        distance_cm = clamp(distance_cm, per_step, B.CRUISE_MAX_CM)
+        steps = int(min(math.ceil(distance_cm / per_step), B.CRUISE_MAX_STEPS))
+        stop_cm = clamp(stop_cm, B.CRUISE_MIN_STOP_CM, 300)
+        speed = int(clamp(speed, 2, B.MAX_SPEED))
+        done, reason, notes = self._gait(steps, forward=30, speed=speed, follow_walls=follow_walls,
+                                         max_seconds=B.CRUISE_MAX_SECONDS, ahead_stop_cm=stop_cm, require_lidar=True)
+        cm = done * per_step
+        text = "Cruised %d of %d steps, about %.0f cm (%.0f in): %s." % (done, steps, cm, cm / 2.54, reason)
+        if follow_walls:
+            text += " Steered %+.0f deg in all to follow the walls (%s)." % (
+                notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
+        if "around_cm" in notes:
+            text += " Lidar now, closest cm: %s." % notes["around_cm"]
         if notes.get("lidar_gaps"):
             text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
         return text
@@ -835,6 +862,8 @@ Be careful: it is a physical machine near people and cats.
 - Never chase, corner or touch an animal. To shoo the orange intruder cat, use patrol_start, which has humane limits built in.
 - Use listen to hear what people near him say. Saying "Bert, stop" stops him on the Pi by itself; if a walk
   ends "stopped by voice", someone told him to stop, so don't just carry on.
+- For long straight runs (a hallway) use cruise: one call walks up to 4 m, steering along the walls
+  and stopping by itself near anything ahead.
 - Walks are watched by the lidar every step and report the distances all round at the end, so chain
   walks of up to 10 steps without stopping to scan. In hallways use follow_walls=True.
 - lidar_scan shows how far things are in every direction (his head hides the first ~25 cm straight
@@ -881,6 +910,19 @@ async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int =
     follow_walls=True (hallways, going forward): each step steers a little to stay parallel to the
     walls and drift back to the middle, which corrects his habit of drifting left."""
     return await call(BERT.walk, forward, sideways, steps, speed, follow_walls)
+
+
+@mcp.tool()
+async def cruise(distance_cm: int = 200, speed: int = B.DEFAULT_SPEED, stop_cm: int = B.CRUISE_STOP_CM,
+                 follow_walls: bool = True) -> str:
+    """Walk forward in one go, up to 400 cm (40 steps, 90 s), with the lidar checking before every step.
+    Use it for long straight runs such as a hallway, instead of many short walks. follow_walls=True steers
+    each step to stay parallel to and centred between straight walls (fixes his left drift).
+    Stops by itself when something in his path is closer than stop_cm (30..300, default 40, measured from
+    the lidar on his back), something comes within a few cm of his side feet, the ultrasonic sees
+    something under 25 cm, someone says "Bert, stop" or stop is called, or the battery is low.
+    Distance is estimated from step count and can be off on rugs. Needs the lidar."""
+    return await call(BERT.cruise, distance_cm, speed, stop_cm, follow_walls)
 
 
 @mcp.tool()
