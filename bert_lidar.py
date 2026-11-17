@@ -40,6 +40,15 @@ SCAN_SECONDS = 0.6        # how long one scan collects; the C1 does ~10 turns a 
 SPIN_UP_TIMEOUT = 6.0     # the C1 sends nothing for ~3 s after SCAN while the motor gets up to speed
 KEEP_SPINNING_SECONDS = 30  # stop the motor this long after the last scan
 MIN_COVERAGE = 0.9        # a scan must sweep this much of the circle (empty readings count) to be trusted
+LATEST_SECONDS = 0.3      # latest(): how much of the newest stream to use (~3 turns on a C1)
+MIN_COVERAGE_LATEST = 0.8
+
+# ---- walking guard (used by the MCP server's walks) ---------------------------
+# Positions are from the lidar: x = cm ahead, y = cm to the left. Measure Bert standing and set these.
+BODY_HALF_LENGTH_CM = 22  # lidar to the tip of his front (and back) feet
+BODY_HALF_WIDTH_CM = 24   # lidar to the tip of his side feet
+LOOKAHEAD_CM = 12         # stop if something is closer than this past his feet, in the way he's going
+FOLLOW_MAX_TURN_DEG = 9   # follow_walls: most he steers in one gait cycle
 SECTORS = (               # name, centre angle (Bert's, + = left), half width
     ("ahead", 0, 22.5), ("ahead_left", 45, 22.5), ("left", 90, 22.5), ("behind_left", 135, 22.5),
     ("behind", 180, 22.5), ("behind_right", -135, 22.5), ("right", -90, 22.5), ("ahead_right", -45, 22.5),
@@ -88,6 +97,9 @@ class Lidar:
         self.info = None
         self.last_scan_time = None
         self.spinning = False
+        self._reader = None
+        self._buf_lock = threading.Lock()
+        self._chunks = []
         self._connect()
         threading.Thread(target=self._idle_stopper, daemon=True).start()
 
@@ -160,6 +172,9 @@ class Lidar:
                            % (self.port, last))
 
     # ---- scanning ------------------------------------------------------------
+    # While the motor spins, a reader thread keeps the last couple of seconds of raw readings.
+    # read_points() waits for fresh ones; latest() hands back the newest without waiting, so a
+    # walk can check its surroundings every step without stopping.
     def _start_scan(self):
         self._motor(True)
         self.ser.reset_input_buffer()
@@ -172,15 +187,55 @@ class Lidar:
             time.sleep(0.05)
         if self.ser.in_waiting < 500:
             raise IOError("the lidar sent no readings within %.0f s of starting; is the motor turning?" % SPIN_UP_TIMEOUT)
+        self.ser.reset_input_buffer()
+        with self._buf_lock:
+            self._chunks = []
         self.spinning = True
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    def _read_loop(self):
+        ser = self.ser
+        while self.spinning and ser is not None:
+            try:
+                data = ser.read(max(1, ser.in_waiting or 1))
+            except Exception as exc:
+                self.log("lidar read failed: %s" % exc)
+                self.spinning = False
+                break
+            if data:
+                now = time.time()
+                with self._buf_lock:
+                    self._chunks.append((now, data))
+                    while self._chunks and now - self._chunks[0][0] > 2.5:
+                        self._chunks.pop(0)
+
+    def _since(self, t0):
+        with self._buf_lock:
+            return b"".join(d for t, d in self._chunks if t > t0)
 
     def _halt(self):
         self.spinning = False
+        reader = getattr(self, "_reader", None)
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=1.5)
+        self._reader = None
         try:
             self._stop()
             self._motor(False)
         except Exception:
             pass
+
+    def ensure_spinning(self):
+        """Start the motor and the reader if they aren't running (takes ~3 s on a C1)."""
+        with self.lock:
+            if not self.spinning:
+                try:
+                    self._start_scan()
+                except Exception:
+                    self._halt()
+                    raise
+            self.last_scan_time = time.time()
 
     def _idle_stopper(self):
         while self.ser is not None:
@@ -193,21 +248,13 @@ class Lidar:
     def read_points(self, seconds=SCAN_SECONDS, _retry=False):
         """Collect fresh readings for `seconds` (spinning up first if needed).
         Returns [(lidar_angle_deg_clockwise, distance_cm, quality)]."""
-        seconds = max(0.2, min(float(seconds), 5.0))
-        with self.lock:
-            try:
-                if not self.spinning:
-                    self._start_scan()
-                self.ser.reset_input_buffer()          # drop readings older than now
-                raw = bytearray()
-                end = time.time() + seconds
-                while time.time() < end:
-                    raw += self.ser.read(max(1, self.ser.in_waiting or 1))
-            except Exception:
-                self._halt()
-                raise
-            self.last_scan_time = time.time()
-        points, coverage = parse_nodes(bytes(raw), with_coverage=True)
+        seconds = max(0.2, min(float(seconds), 2.0))
+        self.ensure_spinning()
+        t0 = time.time()
+        time.sleep(seconds)
+        raw = self._since(t0)
+        self.last_scan_time = time.time()
+        points, coverage = parse_nodes(raw, with_coverage=True)
         if coverage < MIN_COVERAGE:                   # stream went bad: start it again, once
             self.log("only %d%% of the circle came back, restarting the scan" % (coverage * 100))
             with self.lock:
@@ -216,6 +263,15 @@ class Lidar:
                 return self.read_points(seconds, _retry=True)
             raise IOError("the lidar only swept %d%% of the circle; is something stopping it turning?" % (coverage * 100))
         return points
+
+    def latest(self, seconds=LATEST_SECONDS):
+        """The newest readings (the last `seconds`) without waiting, or None if the lidar isn't spinning
+        or the stream looks broken. Keeps the motor spinning."""
+        if not self.spinning:
+            return None
+        self.last_scan_time = time.time()
+        points, coverage = parse_nodes(self._since(time.time() - seconds), with_coverage=True)
+        return points if coverage >= MIN_COVERAGE_LATEST else None
 
     def scan(self, seconds=SCAN_SECONDS, legs_relaxed=None):
         points = self.read_points(seconds)
@@ -325,6 +381,86 @@ def despeckle(points):
                     keep.append((a, d))
                     break
     return keep
+
+
+def to_xy(points):
+    """Good points as (x cm ahead, y cm left), with the head, Bert himself and glitches left out."""
+    bert = [(a, d) for a, d, q in to_bert(points) if q >= MIN_QUALITY and not is_masked(a, d)]
+    out = []
+    for a, d in despeckle(bert):
+        r = math.radians(a)
+        out.append((d * math.cos(r), d * math.sin(r)))
+    return out
+
+
+def in_the_way(points, forward, sideways, ahead_stop_cm=None):
+    """For a walk step (forward/sideways step lengths, + = ahead / right), return a short reason if
+    something is about to touch him, else None. Checks the strip he is moving into (his width going
+    forward or back, his length going sideways) and right beside his feet (the door-frame case).
+    ahead_stop_cm (going forward): stop once something in his path is closer than this to the lidar."""
+    xy = to_xy(points)
+    hl, hw, la = BODY_HALF_LENGTH_CM, BODY_HALF_WIDTH_CM, LOOKAHEAD_CM
+    ahead_limit = max(hl + la, ahead_stop_cm or 0)
+    for x, y in xy:
+        if forward > 0 and hl * 0.5 < x < ahead_limit and abs(y) < hw:
+            return "something %.0f cm ahead in his path (lidar)" % x
+        if forward < 0 and -(hl + la) < x < -hl * 0.5 and abs(y) < hw:
+            return "something %.0f cm behind in his path (lidar)" % -x
+        if sideways > 0 and -(hw + la) < y < -hw * 0.5 and abs(x) < hl:
+            return "something %.0f cm to his right (lidar)" % -y
+        if sideways < 0 and hw * 0.5 < y < hw + la and abs(x) < hl:
+            return "something %.0f cm to his left (lidar)" % y
+        if (forward or sideways) and abs(x) < hl and abs(y) < hw + 3:
+            return "something brushing his %s side, %.0f cm out (lidar)" % ("left" if y > 0 else "right", abs(y))
+    return None
+
+
+def _fit_wall(pts):
+    """Least-squares y = a + b*x through one side's points; returns (a, b) or None."""
+    if len(pts) < 12:
+        return None
+    n = float(len(pts))
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    if sxx < 200:                                    # points bunched up: not a wall
+        return None
+    b = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx
+    a = my - b * mx
+    spread = sum((p[1] - a - b * p[0]) ** 2 for p in pts) / n
+    return (a, b) if spread < 36 else None           # more than ~6 cm scatter: furniture, not a wall
+
+
+def wall_steer(points):
+    """In a hallway, how much to turn (degrees, + = left) to run parallel to the walls and drift back
+    to the middle. Returns (degrees, note) or (0, None) when no straight wall is in reach."""
+    xy = to_xy(points)
+    near = [(x, y) for x, y in xy if -40 < x < 80 and BODY_HALF_WIDTH_CM * 0.8 < abs(y) < 130]
+    left = _fit_wall([p for p in near if p[1] > 0])
+    right = _fit_wall([p for p in near if p[1] < 0])
+    walls = [w for w in (left, right) if w]
+    if not walls:
+        return 0.0, None
+    heading = math.degrees(math.atan(sum(w[1] for w in walls) / len(walls)))  # wall direction, + = left
+    offset = 0.0
+    if left and right:
+        offset = (left[0] + right[0]) / 2.0          # cm the middle of the hall is to his left
+    turn = heading + 0.25 * offset
+    turn = max(-FOLLOW_MAX_TURN_DEG, min(FOLLOW_MAX_TURN_DEG, turn))
+    if left and right:
+        note = "walls both sides, last step %.0f deg off parallel and %.0f cm %s of the middle" % (
+            abs(heading), abs(offset), "right" if offset > 0 else "left")
+    else:
+        note = "wall on the %s only, last step %.0f deg off parallel" % ("left" if left else "right", abs(heading))
+    return turn, note
+
+
+def compact(summary):
+    """One line for walk results: closest cm in each direction."""
+    d = summary["directions"]
+    short = {"ahead": "ahead", "ahead_left": "ahead-L", "left": "L", "behind_left": "behind-L", "behind": "behind",
+             "behind_right": "behind-R", "right": "R", "ahead_right": "ahead-R"}
+    return ", ".join("%s %s" % (short[k], d[k]["closest_cm"] if d[k]["closest_cm"] is not None else "-") for k in short)
 
 
 def direction_name(angle):

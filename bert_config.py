@@ -15,6 +15,13 @@ MAX_TURN_DEGREES = 180       # biggest single turn() call
 CM_PER_STEP_AT_LENGTH_30 = 10.4  # measured: 5 cycles at length 30 went 52 cm (20.5 in); scales with length
 MIN_OBSTACLE_CM = 25         # refuse to step forward when the ultrasonic sees something closer
 
+# ---- cruise: one long lidar-guided walk forward ------------------------------
+CRUISE_MAX_CM = 400          # longest single cruise
+CRUISE_MAX_STEPS = 40        # ...and never more gait cycles than this
+CRUISE_MAX_SECONDS = 90      # ...or longer than this
+CRUISE_STOP_CM = 40          # default: stop when something in his path is this close (from the lidar)
+CRUISE_MIN_STOP_CM = 30      # Claude can't ask for less than this
+
 # ---- Idle and battery watchdog --------------------------------------------
 IDLE_RELAX_SECONDS = 120     # no command for this long: legs relax (saves battery, cools servos)
 WATCHDOG_SECONDS = 5         # how often the watchdog wakes up

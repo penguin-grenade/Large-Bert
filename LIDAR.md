@@ -27,6 +27,31 @@ rings every 50 cm, red = obstacles, grey = ignored points.
 
 Measured 2026-11-16: the lidar's 0 degrees already points straight ahead (`YAW_OFFSET_DEG = 0`).
 
+## Watching while he walks
+
+Every `walk` uses the lidar too (no separate scan, no stopping). While the motor spins, a reader
+thread keeps the newest readings, and before each gait cycle the walk checks the last 0.3 s:
+
+- **In his path**: anything within `LOOKAHEAD_CM` past his feet, in the strip as wide as he is
+  (going forward or back) or as long as he is (crab-walking), stops the walk.
+- **Brushing his sides**: anything within 3 cm of his side feet stops it too (the door-frame case).
+- The result ends with the closest distance in each direction, so Claude can chain walks.
+- **`follow_walls=True`** (hallways): each step adds a small turn (at most 9 degrees) to stay
+  parallel to the walls and drift back to the middle. It fits a straight line to the wall points on
+  each side; furniture that isn't a straight line is ignored. This replaces stopping to correct
+  his drift to the left.
+
+**`cruise(distance_cm, speed, stop_cm, follow_walls)`** is one long walk forward (up to 400 cm,
+40 steps, 90 s) with all of the above every step and wall-following on by default. It stops by
+itself when something in his path is closer than `stop_cm` to the lidar (default 40, at least 30).
+Use it for a hallway instead of many short walks. Its limits are in `bert_config.py`.
+
+Bert's size is set by `BODY_HALF_LENGTH_CM` (22) and `BODY_HALF_WIDTH_CM` (24), measured from the
+lidar to his foot tips while standing. They're estimates: measure him and adjust.
+
+The first walk waits about 3 s for the lidar to spin up. If the lidar is missing, walks still
+work with only the ultrasonic, and the result says so.
+
 ## Try it on its own
 
 Only one program can open the lidar, so stop the MCP server first (or let it be: it only
