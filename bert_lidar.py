@@ -13,8 +13,8 @@ Things it ignores, so they aren't reported as obstacles:
   * the head: it sits just in front of the lidar, so straight ahead (+/-HEAD_MASK_DEG) the lidar
     sees the head at 12-19 cm. Points there closer than HEAD_MASK_CM are dropped; the lidar still
     sees past the head further out, and the ultrasonic sensor covers it too.
-  * Bert himself: anything closer than SELF_RADIUS_CM (legs, cables, the top plate).
-    Sitting, his legs reach further out than this, so scans taken while relaxed say so.
+  * Bert himself: anything closer than SELF_RADIUS_CM. His legs stay below the scan plane even
+    sitting (checked 2026-11-16), so apart from the head nothing of him shows up.
 
 Try it on its own (stop the MCP server first: only one program can open the lidar):
     python3 bert_lidar.py                  # model, health and one scan summary
@@ -287,9 +287,6 @@ def summarise(points, legs_relaxed=None):
         "ignored": "within %d cm straight ahead (+/-%d deg: his head) and within %d cm all round (Bert himself)"
                    % (HEAD_MASK_CM, HEAD_MASK_DEG, SELF_RADIUS_CM),
     }
-    if legs_relaxed:
-        out["warning"] = ("Bert is sitting, so his legs stick out and may show up as close obstacles. "
-                          "Stand up before trusting short readings.")
     if len(points) < 100:
         out["warning"] = (out.get("warning", "") + " Very few points came back; the lidar may not be spinning.").strip()
     return out

@@ -782,7 +782,7 @@ Be careful: it is a physical machine near people and cats.
   ends "stopped by voice", someone told him to stop, so don't just carry on.
 - lidar_scan shows how far things are in every direction (his head hides the first ~25 cm straight
   ahead; the ultrasonic covers that). Use it before turning, crab-walking or going through doorways,
-  since the camera and sonar only see ahead. Stand up first: sitting, his legs show up as close obstacles.
+  since the camera and sonar only see ahead.
 - When you're done, call relax so the servos rest."""
 
 mcp = _Server("Large Bert", instructions=INSTRUCTIONS)
@@ -931,8 +931,7 @@ async def lidar_scan(picture: bool = False) -> list:
     (ahead, ahead_left, left, behind_left, behind, behind_right, right, ahead_right), in cm, plus the overall
     closest point. Angles: 0 = ahead, positive = left. His head hides the first ~25 cm straight ahead
     (beyond that the lidar sees past it); ultrasonic_ahead_cm covers that gap. picture=True adds a top-down map
-    (Bert in the middle facing up, rings every 50 cm, red = obstacles, grey = ignored). Stand up first for
-    trustworthy short readings; sitting, his legs are in view."""
+    (Bert in the middle facing up, rings every 50 cm, red = obstacles, grey = ignored)."""
     try:
         summary, png = await run_blocking(BERT.lidar_scan, picture)
     except Refused as exc:
