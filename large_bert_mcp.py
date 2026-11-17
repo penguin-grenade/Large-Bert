@@ -2,7 +2,7 @@
 """Large Bert's MCP server: lets Claude drive the Freenove Big Hexapod.
 
 Tools: status, walk, turn, stop, stand_up, relax, look, snapshot, who_is_there,
-body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen.
+body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen, lidar_scan.
 
 Safety (settings in bert_config.py, battery cut-offs from patrol_config.py):
   * every walk/turn is capped in steps and seconds, and checks the stop flag,
@@ -337,6 +337,8 @@ class Bert:
                 log("Voice stop is off: %s" % exc)
         else:
             self.ears_error = "turned off (--no-ears)"
+        self.lidar = None
+        self.lidar_error = None
         self.check_battery(force=True)
         threading.Thread(target=self._watchdog, daemon=True).start()
 
@@ -591,6 +593,40 @@ class Bert:
         self.touch()
         return found, encode_jpeg(annotate(frame, detections))
 
+    # ---- lidar ---------------------------------------------------------------
+    def get_lidar(self):
+        if self.lidar is None:
+            if self.sim:
+                raise Refused("there is no lidar in the simulator")
+            try:
+                import bert_lidar
+                self.lidar = bert_lidar.Lidar(log=lambda m: log("[lidar] " + m))
+                self.lidar_error = None
+            except Exception as exc:
+                self.lidar_error = str(exc)
+                raise Refused("the lidar isn't working: %s" % exc)
+        return self.lidar
+
+    def lidar_scan(self, picture):
+        import bert_lidar
+        lidar = self.get_lidar()
+        try:
+            points = lidar.read_points()
+        except Exception as exc:              # unplugged mid-run etc.: reopen next time
+            try:
+                lidar.close()
+            except Exception:
+                pass
+            self.lidar = None
+            self.lidar_error = str(exc)
+            raise Refused("the lidar scan failed: %s" % exc)
+        summary = bert_lidar.summarise(points, legs_relaxed=self.relaxed)
+        if not self.patrol_running():
+            summary["ultrasonic_ahead_cm"] = self.hw.distance()
+        self.touch()
+        png = bert_lidar.render_png(points) if picture else None
+        return summary, png
+
     # ---- lights and buzzer ------------------------------------------------
     def lights(self, colour, brightness):
         self.require_no_patrol()
@@ -636,6 +672,7 @@ class Bert:
             "movement_allowed": not self.no_move,
             "quiet_hours_now": in_quiet_hours(),
             "ears": self.ears.status() if self.ears else {"mic_ok": False, "error": self.ears_error},
+            "lidar": self.lidar.status() if self.lidar else {"open": False, "error": self.lidar_error},
             "limits": {"max_steps_per_call": B.MAX_STEPS_PER_CALL, "max_move_seconds": B.MAX_MOVE_SECONDS,
                        "max_speed": B.MAX_SPEED, "max_step_length": B.MAX_STEP_LENGTH,
                        "min_obstacle_cm": B.MIN_OBSTACLE_CM, "idle_relax_seconds": B.IDLE_RELAX_SECONDS},
@@ -711,6 +748,11 @@ class Bert:
         self._relax()
         if self.ears is not None:
             self.ears.close()
+        if self.lidar is not None:
+            try:
+                self.lidar.close()
+            except Exception:
+                pass
         if self.camera is not None:
             try:
                 self.camera.close()
@@ -738,6 +780,9 @@ Be careful: it is a physical machine near people and cats.
 - Never chase, corner or touch an animal. To shoo the orange intruder cat, use patrol_start, which has humane limits built in.
 - Use listen to hear what people near him say. Saying "Bert, stop" stops him on the Pi by itself; if a walk
   ends "stopped by voice", someone told him to stop, so don't just carry on.
+- lidar_scan shows how far things are in every direction except straight ahead (the head blocks
+  that; the ultrasonic in status covers it). Use it before turning, crab-walking or going through doorways,
+  since the camera and sonar only see ahead. Stand up first: sitting, his legs show up as close obstacles.
 - When you're done, call relax so the servos rest."""
 
 mcp = _Server("Large Bert", instructions=INSTRUCTIONS)
@@ -878,6 +923,25 @@ async def listen(seconds: float = 6) -> dict:
     rough on unusual words). seconds: 1..30, the longest to wait; it returns soon after a sentence ends.
     Anyone saying "Bert, stop" stops him on the Pi at any time, whether or not you are listening."""
     return await call(BERT.listen, seconds)
+
+
+@mcp.tool()
+async def lidar_scan(picture: bool = False) -> list:
+    """Spin the lidar on Large Bert's back for about a second and report the closest thing in 8 directions
+    (ahead, ahead_left, left, behind_left, behind, behind_right, right, ahead_right), in cm, plus the overall
+    closest point. Angles: 0 = ahead, positive = left. Straight ahead is blocked by his head, so that
+    direction uses the ultrasonic reading instead (ultrasonic_ahead_cm). picture=True adds a top-down map
+    (Bert in the middle facing up, rings every 50 cm, red = obstacles, grey = ignored). Stand up first for
+    trustworthy short readings; sitting, his legs are in view."""
+    try:
+        summary, png = await run_blocking(BERT.lidar_scan, picture)
+    except Refused as exc:
+        return ["Refused: %s" % exc]
+    import json
+    out = [json.dumps(summary)]
+    if png:
+        out.append(Image(data=png, format="png"))
+    return out
 
 
 @mcp.tool()
