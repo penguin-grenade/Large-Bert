@@ -372,14 +372,27 @@ def despeckle(points):
     while a glitch (a byte lost on USB) gives one odd point. Keeps a point if another point within
     2 degrees is within 10% (at least 5 cm) of its distance."""
     pts = sorted(points)
+    n = len(pts)
     keep = []
     for k, (a, d) in enumerate(pts):
-        for j in (k - 2, k - 1, k + 1, k + 2):
-            if 0 <= j < len(pts):
-                a2, d2 = pts[j]
-                if abs(wrap180(a2 - a)) <= 2.0 and abs(d2 - d) <= max(5.0, 0.1 * d):
-                    keep.append((a, d))
+        tol = max(5.0, 0.1 * d)
+        found = False
+        for step in (1, -1):                         # look both ways, out to 2 degrees
+            j = k + step
+            for _ in range(40):
+                if n == 0:
                     break
+                a2, d2 = pts[j % n]
+                if j % n == k or abs(wrap180(a2 - a)) > 2.0:
+                    break
+                if abs(d2 - d) <= tol:
+                    found = True
+                    break
+                j += step
+            if found:
+                break
+        if found:
+            keep.append((a, d))
     return keep
 
 
@@ -396,22 +409,28 @@ def to_xy(points):
 def in_the_way(points, forward, sideways, ahead_stop_cm=None):
     """For a walk step (forward/sideways step lengths, + = ahead / right), return a short reason if
     something is about to touch him, else None. Checks the strip he is moving into (his width going
-    forward or back, his length going sideways) and right beside his feet (the door-frame case).
+    forward or back, his length going sideways) and right beside his feet (the door-frame case), but
+    only when the move takes him towards it.
     ahead_stop_cm (going forward): stop once something in his path is closer than this to the lidar."""
     xy = to_xy(points)
     hl, hw, la = BODY_HALF_LENGTH_CM, BODY_HALF_WIDTH_CM, LOOKAHEAD_CM
     ahead_limit = max(hl + la, ahead_stop_cm or 0)
     for x, y in xy:
-        if forward > 0 and hl * 0.5 < x < ahead_limit and abs(y) < hw:
+        if forward > 0 and hl * 0.75 < x < ahead_limit and abs(y) < hw:
             return "something %.0f cm ahead in his path (lidar)" % x
-        if forward < 0 and -(hl + la) < x < -hl * 0.5 and abs(y) < hw:
+        if forward < 0 and -(hl + la) < x < -hl * 0.75 and abs(y) < hw:
             return "something %.0f cm behind in his path (lidar)" % -x
-        if sideways > 0 and -(hw + la) < y < -hw * 0.5 and abs(x) < hl:
+        if sideways > 0 and -(hw + la) < y < -hw * 0.75 and abs(x) < hl:
             return "something %.0f cm to his right (lidar)" % -y
-        if sideways < 0 and hw * 0.5 < y < hw + la and abs(x) < hl:
+        if sideways < 0 and hw * 0.75 < y < hw + la and abs(x) < hl:
             return "something %.0f cm to his left (lidar)" % y
-        if (forward or sideways) and abs(x) < hl and abs(y) < hw + 3:
-            return "something brushing his %s side, %.0f cm out (lidar)" % ("left" if y > 0 else "right", abs(y))
+        if abs(x) < hl and abs(y) < hw + 3:
+            # right beside him: only a problem if this move takes him towards it, so he can always
+            # step away from a door frame he is touching
+            towards = (sideways > 0 and y < 0) or (sideways < 0 and y > 0) or \
+                      (forward > 0 and x > 0 and not sideways) or (forward < 0 and x < 0 and not sideways)
+            if towards:
+                return "something brushing his %s side, %.0f cm out (lidar)" % ("left" if y > 0 else "right", abs(y))
     return None
 
 
