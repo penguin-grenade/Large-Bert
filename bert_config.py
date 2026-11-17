@@ -29,6 +29,7 @@ IDLE_RELAX_SECONDS = 120     # no command for this long: legs relax (saves batte
 WATCHDOG_SECONDS = 5         # how often the watchdog wakes up
 BATTERY_CHECK_SECONDS = 30   # how often the battery is read while idle
 BATTERY_RECOVER_MARGIN_V = 0.2  # after a low-battery stop, need this much above the cut-off to move again
+BATTERY_WARN_V = 7.0         # servo battery below this: status and walks say it's getting low (weaker, more drift)
 
 # ---- Head, body, lights, buzzer -------------------------------------------
 PAN_RANGE = (50, 180)        # same limits as the Freenove server (90 = straight ahead)

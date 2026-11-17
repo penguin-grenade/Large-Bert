@@ -30,4 +30,4 @@ Not in the repo: `bert_wheel.json` (the PC's saved wheel setup), the reference c
 - Turning: about 31° per gait cycle (`DEG_PER_TURN_CYCLE`).
 - Walking: about 10.4 cm (4.1 in) per gait cycle at step length 30 (`CM_PER_STEP_AT_LENGTH_30`).
 - Relax switches servo power off (GPIO4), because the servos hold position without a signal.
-- Battery cut-offs: 5.0 V load, 6.4 V Pi.
+- Battery cut-offs: 6.4 V load (raised from 5.0 on 2026-11-16: he gets weak well before that, and 2.5 V/cell wears the cells), 6.4 V Pi. Below 7.0 V load, status and walks warn that he's getting low.

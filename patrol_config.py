@@ -69,7 +69,7 @@ CHIRP_EVERY_SECONDS = 2.0
 QUIET_HOURS = (22, 7)       # no buzzer between these local hours (lights still work); None to disable
 
 # ---- Safety -------------------------------------------------------------
-MIN_LOAD_BATTERY_V = 5.0    # servo battery (2S Li-ion); below this the robot sits down and stops
+MIN_LOAD_BATTERY_V = 6.4    # servo battery (2S Li-ion, ~7.9 V full); below this (3.2 V/cell) the robot sits down and stops
 MIN_PI_BATTERY_V = 6.4
 BATTERY_CHECK_SECONDS = 60
 

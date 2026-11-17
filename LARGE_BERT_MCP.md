@@ -100,7 +100,7 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 - Going forward, he stops if the ultrasonic sees something **closer than 25 cm**.
 - **`stop`** interrupts a walk between steps. Pressing **Esc** in Claude Code does too.
 - Saying **"Bert, stop"** near his microphone stops him on the Pi, without waiting on Claude ([VOICE.md](VOICE.md)).
-- The battery is checked before every move and every 30 seconds. **Below 5.0 V (load) or
+- The battery is checked before every move and every 30 seconds. **Below 6.4 V (load) or
   6.4 V (Pi)** he relaxes and refuses to move until it's 0.2 V above the cut-off. These
   values come from `patrol_config.py`.
 - After **2 minutes without a command**, the legs relax.
