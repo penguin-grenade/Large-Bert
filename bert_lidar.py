@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Large Bert's lidar: an RPLIDAR on the top plate, plugged into the Pi over USB.
 
-Scans are taken on demand (the motor only spins while a scan runs), which keeps the Pi 3's
-CPU and the lidar's motor free the rest of the time. It speaks the plain SCAN command, which
+The motor starts on the first scan and keeps spinning for KEEP_SPINNING_SECONDS after the last
+one, so a run of scans is quick (the C1 takes about 3 s to spin up) but it rests when not used. It speaks the plain SCAN command, which
 every RPLIDAR (A1, A2, A3, C1, S1, S2...) understands at its own baud rate, so the model
 is found by asking it, not by settings.
 
@@ -10,8 +10,9 @@ Angles everywhere outside this file are Bert's: 0 = straight ahead, positive = t
 (anticlockwise seen from above, the same as turn() and look()), -90 = right, +/-180 = behind.
 
 Things it ignores, so they aren't reported as obstacles:
-  * the head: it sits in front of the lidar, so the sector straight ahead is blocked
-    (HEAD_MASK_DEG). The ultrasonic sensor covers that direction.
+  * the head: it sits just in front of the lidar, so straight ahead (+/-HEAD_MASK_DEG) the lidar
+    sees the head at 12-19 cm. Points there closer than HEAD_MASK_CM are dropped; the lidar still
+    sees past the head further out, and the ultrasonic sensor covers it too.
   * Bert himself: anything closer than SELF_RADIUS_CM (legs, cables, the top plate).
     Sitting, his legs reach further out than this, so scans taken while relaxed say so.
 
@@ -30,12 +31,14 @@ import time
 # ---- settings ---------------------------------------------------------------
 PORT = os.environ.get("BERT_LIDAR_PORT", "")   # empty: find it (see find_port)
 YAW_OFFSET_DEG = 0.0      # lidar angle (clockwise) that points straight ahead of Bert
-HEAD_MASK_DEG = 30.0      # ignore +/- this many degrees around straight ahead (the head is there)
+HEAD_MASK_DEG = 15.0      # the head shows up within +/- this many degrees of straight ahead...
+HEAD_MASK_CM = 25.0       # ...closer than this (measured 2026-11-16: +/-10 deg, 12-19 cm)
 SELF_RADIUS_CM = 12.0     # ignore points closer than this (Bert's own body)
 MAX_RANGE_CM = 1200.0     # ignore anything further (A1 is 12 m, C1 12 m)
 MIN_QUALITY = 1           # A-series reports 0 for a failed reading
-SCAN_SECONDS = 1.2        # how long one scan() collects; the lidar does ~5-10 turns a second
-SPIN_UP_SECONDS = 1.0     # A1/A2 need the motor up to speed before readings are good
+SCAN_SECONDS = 0.6        # how long one scan collects; the C1 does ~10 turns a second
+SPIN_UP_TIMEOUT = 6.0     # the C1 sends nothing for ~3 s after SCAN while the motor gets up to speed
+KEEP_SPINNING_SECONDS = 30  # stop the motor this long after the last scan
 SECTORS = (               # name, centre angle (Bert's, + = left), half width
     ("ahead", 0, 22.5), ("ahead_left", 45, 22.5), ("left", 90, 22.5), ("behind_left", 135, 22.5),
     ("behind", 180, 22.5), ("behind_right", -135, 22.5), ("right", -90, 22.5), ("ahead_right", -45, 22.5),
@@ -83,7 +86,9 @@ class Lidar:
         self.baud = None
         self.info = None
         self.last_scan_time = None
+        self.spinning = False
         self._connect()
+        threading.Thread(target=self._idle_stopper, daemon=True).start()
 
     # ---- low level ------------------------------------------------------------
     def _cmd(self, cmd, payload=b""):
@@ -154,31 +159,58 @@ class Lidar:
                            % (self.port, last))
 
     # ---- scanning ------------------------------------------------------------
+    def _start_scan(self):
+        self._motor(True)
+        self.ser.reset_input_buffer()
+        self._cmd(0x20)                               # SCAN: 5-byte nodes
+        size, _ = self._descriptor()
+        if size != 5:
+            raise IOError("unexpected scan format (%d-byte nodes)" % size)
+        deadline = time.time() + SPIN_UP_TIMEOUT      # wait for the motor to reach speed
+        while time.time() < deadline and self.ser.in_waiting < 500:
+            time.sleep(0.05)
+        if self.ser.in_waiting < 500:
+            raise IOError("the lidar sent no readings within %.0f s of starting; is the motor turning?" % SPIN_UP_TIMEOUT)
+        self.spinning = True
+
+    def _halt(self):
+        self.spinning = False
+        try:
+            self._stop()
+            self._motor(False)
+        except Exception:
+            pass
+
+    def _idle_stopper(self):
+        while self.ser is not None:
+            time.sleep(2)
+            if self.spinning and self.last_scan_time and time.time() - self.last_scan_time > KEEP_SPINNING_SECONDS:
+                with self.lock:
+                    if self.spinning and time.time() - self.last_scan_time > KEEP_SPINNING_SECONDS:
+                        self._halt()
+
     def read_points(self, seconds=SCAN_SECONDS):
-        """Spin up, collect for `seconds`, stop. Returns [(lidar_angle_deg_clockwise, distance_cm, quality)]."""
-        seconds = max(0.3, min(float(seconds), 5.0))
+        """Collect fresh readings for `seconds` (spinning up first if needed).
+        Returns [(lidar_angle_deg_clockwise, distance_cm, quality)]."""
+        seconds = max(0.2, min(float(seconds), 5.0))
         with self.lock:
             try:
-                self._motor(True)
-                if self.info["model"] in ("A1", "A2", "A3"):
-                    time.sleep(SPIN_UP_SECONDS)
-                self.ser.reset_input_buffer()
-                self._cmd(0x20)                       # SCAN: 5-byte nodes
-                size, _ = self._descriptor()
-                if size != 5:
-                    raise IOError("unexpected scan format (%d-byte nodes)" % size)
+                if not self.spinning:
+                    self._start_scan()
+                self.ser.reset_input_buffer()          # drop readings older than now
                 raw = bytearray()
                 end = time.time() + seconds
                 while time.time() < end:
                     raw += self.ser.read(max(1, self.ser.in_waiting or 1))
-            finally:
-                try:
-                    self._stop()
-                    self._motor(False)
-                except Exception:
-                    pass
-        self.last_scan_time = time.time()
-        return parse_nodes(bytes(raw))
+            except Exception:
+                self._halt()
+                raise
+            self.last_scan_time = time.time()
+        points = parse_nodes(bytes(raw))
+        if len(points) < 50:                          # stream went bad: restart it next time
+            with self.lock:
+                self._halt()
+        return points
 
     def scan(self, seconds=SCAN_SECONDS, legs_relaxed=None):
         points = self.read_points(seconds)
@@ -186,17 +218,14 @@ class Lidar:
 
     def status(self):
         out = dict(self.info or {})
+        out["spinning"] = self.spinning
         out["last_scan"] = time.strftime("%H:%M:%S", time.localtime(self.last_scan_time)) if self.last_scan_time else None
         return out
 
     def close(self):
         if self.ser is not None:
-            try:
-                with self.lock:
-                    self._stop()
-                    self._motor(False)
-            except Exception:
-                pass
+            with self.lock:
+                self._halt()
             self.ser.close()
             self.ser = None
 
@@ -231,7 +260,7 @@ def to_bert(points):
 
 
 def is_masked(bert_angle, dist_cm):
-    if abs(bert_angle) <= HEAD_MASK_DEG:
+    if abs(bert_angle) <= HEAD_MASK_DEG and dist_cm < HEAD_MASK_CM:
         return "head"
     if dist_cm < SELF_RADIUS_CM:
         return "self"
@@ -247,11 +276,6 @@ def summarise(points, legs_relaxed=None):
     sectors = {}
     for name, centre, half in SECTORS:
         hits = [d for a, d in good if abs(wrap180(a - centre)) <= half]
-        if abs(centre) < half:                            # "ahead" is mostly head: say what it covers
-            lo = HEAD_MASK_DEG
-            if lo >= half:
-                sectors[name] = {"closest_cm": None, "note": "blocked by the head, use the ultrasonic (status)"}
-                continue
         sectors[name] = {"closest_cm": round(min(hits)) if hits else None, "points": len(hits)}
     closest = min(good, key=lambda p: p[1]) if good else None
     out = {
@@ -260,8 +284,8 @@ def summarise(points, legs_relaxed=None):
         "closest": {"cm": round(closest[1]), "angle_deg": round(closest[0]),
                     "where": direction_name(closest[0])} if closest else None,
         "angles": "0 = straight ahead, positive = left, negative = right, 180 = behind",
-        "ignored": "+/-%d deg ahead (the head; the ultrasonic covers it) and anything within %d cm (Bert himself)"
-                   % (HEAD_MASK_DEG, SELF_RADIUS_CM),
+        "ignored": "within %d cm straight ahead (+/-%d deg: his head) and within %d cm all round (Bert himself)"
+                   % (HEAD_MASK_CM, HEAD_MASK_DEG, SELF_RADIUS_CM),
     }
     if legs_relaxed:
         out["warning"] = ("Bert is sitting, so his legs stick out and may show up as close obstacles. "
@@ -288,7 +312,7 @@ def render_png(points, size=480, max_cm=300):
     for r in range(50, max_cm + 1, 50):
         cv2.circle(img, (c, c), int(r * scale), (225, 225, 225), 1)
         cv2.putText(img, "%dcm" % r, (c + 3, c - int(r * scale) + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1)
-    mask_px = int(max_cm * scale)
+    mask_px = int(HEAD_MASK_CM * scale)
     for sign in (-1, 1):
         a = math.radians(HEAD_MASK_DEG * sign)
         cv2.line(img, (c, c), (int(c - mask_px * math.sin(a)), int(c - mask_px * math.cos(a))), (200, 200, 255), 1)

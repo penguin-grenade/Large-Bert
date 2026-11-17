@@ -780,8 +780,8 @@ Be careful: it is a physical machine near people and cats.
 - Never chase, corner or touch an animal. To shoo the orange intruder cat, use patrol_start, which has humane limits built in.
 - Use listen to hear what people near him say. Saying "Bert, stop" stops him on the Pi by itself; if a walk
   ends "stopped by voice", someone told him to stop, so don't just carry on.
-- lidar_scan shows how far things are in every direction except straight ahead (the head blocks
-  that; the ultrasonic in status covers it). Use it before turning, crab-walking or going through doorways,
+- lidar_scan shows how far things are in every direction (his head hides the first ~25 cm straight
+  ahead; the ultrasonic covers that). Use it before turning, crab-walking or going through doorways,
   since the camera and sonar only see ahead. Stand up first: sitting, his legs show up as close obstacles.
 - When you're done, call relax so the servos rest."""
 
@@ -927,10 +927,10 @@ async def listen(seconds: float = 6) -> dict:
 
 @mcp.tool()
 async def lidar_scan(picture: bool = False) -> list:
-    """Spin the lidar on Large Bert's back for about a second and report the closest thing in 8 directions
+    """Read the lidar on Large Bert's back (about half a second; the first scan takes ~4 s to spin up) and report the closest thing in 8 directions
     (ahead, ahead_left, left, behind_left, behind, behind_right, right, ahead_right), in cm, plus the overall
-    closest point. Angles: 0 = ahead, positive = left. Straight ahead is blocked by his head, so that
-    direction uses the ultrasonic reading instead (ultrasonic_ahead_cm). picture=True adds a top-down map
+    closest point. Angles: 0 = ahead, positive = left. His head hides the first ~25 cm straight ahead
+    (beyond that the lidar sees past it); ultrasonic_ahead_cm covers that gap. picture=True adds a top-down map
     (Bert in the middle facing up, rings every 50 cm, red = obstacles, grey = ignored). Stand up first for
     trustworthy short readings; sitting, his legs are in view."""
     try:
