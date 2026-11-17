@@ -39,6 +39,7 @@ MIN_QUALITY = 1           # A-series reports 0 for a failed reading
 SCAN_SECONDS = 0.6        # how long one scan collects; the C1 does ~10 turns a second
 SPIN_UP_TIMEOUT = 6.0     # the C1 sends nothing for ~3 s after SCAN while the motor gets up to speed
 KEEP_SPINNING_SECONDS = 30  # stop the motor this long after the last scan
+MIN_COVERAGE = 0.9        # a scan must sweep this much of the circle (empty readings count) to be trusted
 SECTORS = (               # name, centre angle (Bert's, + = left), half width
     ("ahead", 0, 22.5), ("ahead_left", 45, 22.5), ("left", 90, 22.5), ("behind_left", 135, 22.5),
     ("behind", 180, 22.5), ("behind_right", -135, 22.5), ("right", -90, 22.5), ("ahead_right", -45, 22.5),
@@ -189,7 +190,7 @@ class Lidar:
                     if self.spinning and time.time() - self.last_scan_time > KEEP_SPINNING_SECONDS:
                         self._halt()
 
-    def read_points(self, seconds=SCAN_SECONDS):
+    def read_points(self, seconds=SCAN_SECONDS, _retry=False):
         """Collect fresh readings for `seconds` (spinning up first if needed).
         Returns [(lidar_angle_deg_clockwise, distance_cm, quality)]."""
         seconds = max(0.2, min(float(seconds), 5.0))
@@ -206,10 +207,14 @@ class Lidar:
                 self._halt()
                 raise
             self.last_scan_time = time.time()
-        points = parse_nodes(bytes(raw))
-        if len(points) < 50:                          # stream went bad: restart it next time
+        points, coverage = parse_nodes(bytes(raw), with_coverage=True)
+        if coverage < MIN_COVERAGE:                   # stream went bad: start it again, once
+            self.log("only %d%% of the circle came back, restarting the scan" % (coverage * 100))
             with self.lock:
                 self._halt()
+            if not _retry:
+                return self.read_points(seconds, _retry=True)
+            raise IOError("the lidar only swept %d%% of the circle; is something stopping it turning?" % (coverage * 100))
         return points
 
     def scan(self, seconds=SCAN_SECONDS, legs_relaxed=None):
@@ -230,27 +235,41 @@ class Lidar:
             self.ser = None
 
 
-def parse_nodes(raw):
-    """Standard SCAN nodes, 5 bytes each. Finds the byte alignment by the check bits, drops bad nodes."""
-    best, best_ok = 0, -1
-    for off in range(5):
-        ok = 0
-        for i in range(off, min(len(raw) - 4, off + 500), 5):
-            b0, b1 = raw[i], raw[i + 1]
-            if ((b0 & 1) ^ ((b0 >> 1) & 1)) and (b1 & 1):
-                ok += 1
-        if ok > best_ok:
-            best, best_ok = off, ok
-    points = []
-    for i in range(best, len(raw) - 4, 5):
-        b0, b1, b2, b3, b4 = raw[i:i + 5]
-        if not (((b0 & 1) ^ ((b0 >> 1) & 1)) and (b1 & 1)):
+def _node_angle(raw, i):
+    """Angle (q6) of the node at byte i, or None if its check bits are wrong."""
+    b0, b1, b2 = raw[i], raw[i + 1], raw[i + 2]
+    if not (((b0 & 1) ^ ((b0 >> 1) & 1)) and (b1 & 1)):
+        return None
+    angle = (b1 >> 1) | (b2 << 7)
+    return angle if angle < 360 * 64 else None
+
+
+def parse_nodes(raw, with_coverage=False):
+    """Standard SCAN nodes, 5 bytes each. The check bits are only 2 bits, so a node is only trusted when
+    it and the next two nodes all pass them AND their angles step forward by a little (the lidar turns
+    under 1 degree per reading). After a dropped byte it slides along one byte at a time until it locks
+    on again, so a gap in the stream costs a few readings, not the rest of the scan.
+    Returns [(lidar_angle_deg_clockwise, distance_cm, quality)], plus the fraction of the circle that
+    was swept (in 5 degree slices) when with_coverage is set."""
+    def close(a, b):
+        return (b - a) % (360 * 64) < 5 * 64
+    points, swept = [], set()
+    i, n = 0, len(raw)
+    while i + 15 <= n:
+        a0 = _node_angle(raw, i)
+        a1 = _node_angle(raw, i + 5) if a0 is not None else None
+        a2 = _node_angle(raw, i + 10) if a1 is not None else None
+        if a2 is None or not (close(a0, a1) and close(a1, a2)):
+            i += 1
             continue
-        dist_mm = (b3 | (b4 << 8)) / 4.0
-        if dist_mm <= 0:
-            continue
-        angle = ((b1 >> 1) | (b2 << 7)) / 64.0
-        points.append((angle % 360.0, dist_mm / 10.0, b0 >> 2))
+        angle = a0 / 64.0
+        swept.add(int(angle // 5))
+        dist_mm = (raw[i + 3] | (raw[i + 4] << 8)) / 4.0
+        if dist_mm > 0:
+            points.append((angle, dist_mm / 10.0, raw[i] >> 2))
+        i += 5
+    if with_coverage:
+        return points, len(swept) / 72.0
     return points
 
 
@@ -272,7 +291,7 @@ def is_masked(bert_angle, dist_cm):
 def summarise(points, legs_relaxed=None):
     """Closest thing in each of 8 directions, with Bert's own head and body left out."""
     bert = to_bert(points)
-    good = [(a, d) for a, d, q in bert if q >= MIN_QUALITY and not is_masked(a, d)]
+    good = despeckle([(a, d) for a, d, q in bert if q >= MIN_QUALITY and not is_masked(a, d)])
     sectors = {}
     for name, centre, half in SECTORS:
         hits = [d for a, d in good if abs(wrap180(a - centre)) <= half]
@@ -290,6 +309,22 @@ def summarise(points, legs_relaxed=None):
     if len(points) < 100:
         out["warning"] = (out.get("warning", "") + " Very few points came back; the lidar may not be spinning.").strip()
     return out
+
+
+def despeckle(points):
+    """Drop lone readings: a real object gives several neighbouring readings at about the same range,
+    while a glitch (a byte lost on USB) gives one odd point. Keeps a point if another point within
+    2 degrees is within 10% (at least 5 cm) of its distance."""
+    pts = sorted(points)
+    keep = []
+    for k, (a, d) in enumerate(pts):
+        for j in (k - 2, k - 1, k + 1, k + 2):
+            if 0 <= j < len(pts):
+                a2, d2 = pts[j]
+                if abs(wrap180(a2 - a)) <= 2.0 and abs(d2 - d) <= max(5.0, 0.1 * d):
+                    keep.append((a, d))
+                    break
+    return keep
 
 
 def direction_name(angle):
