@@ -45,6 +45,17 @@ def find_port():
     raise RuntimeError("no IMU adapter at %s (USB serial devices: %s). Is it plugged in?" % (BY_ID, seen))
 
 
+def wrap180(deg):
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def body_tilt(pitch, roll):
+    """Degrees between the body's up and true up, from the BNO's fused pitch and roll (so walking
+    jolts, which spike the raw accelerometer, don't count as tilt)."""
+    c = math.cos(math.radians(pitch)) * math.cos(math.radians(roll))
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
 def parse_packet(body):
     """body: the 17 bytes after 0xAA 0xAA. Returns (yaw, pitch, roll, ax, ay, az) in degrees and g, or None."""
     if len(body) != 17 or sum(body[:16]) & 0xFF != body[16]:
@@ -61,6 +72,9 @@ class Imu:
         self.ser = serial.Serial(self.port, BAUD, timeout=0.2)
         self.lock = threading.Lock()
         self.history = []          # (time, yaw, pitch, roll, ax, ay, az), newest last, ~1 s kept
+        self.yaw_total = 0.0       # yaw unwrapped (keeps counting past +/-180), for "how far turned"
+        self.peak_tilt = 0.0       # most tilt from level since mark(), from every packet
+        self._last_yaw = None
         self.packets = 0
         self.bad = 0
         self.running = True
@@ -98,7 +112,14 @@ class Imu:
                     continue
                 buf = buf[start + 19:]
                 now = time.monotonic()
+                yaw, pitch, roll = reading[0], reading[1], reading[2]
+                tilt = body_tilt(pitch, roll)
                 with self.lock:
+                    if self._last_yaw is not None:
+                        self.yaw_total += wrap180(yaw - self._last_yaw)
+                    self._last_yaw = yaw
+                    if tilt > self.peak_tilt:
+                        self.peak_tilt = tilt
                     self.packets += 1
                     self.history.append((now,) + reading)
                     while self.history and now - self.history[0][0] > 1.0:
@@ -127,6 +148,21 @@ class Imu:
             "rate_hz": round((len(hist) - 1) / span) if span > 0 else None,
             "age_ms": int((time.monotonic() - newest) * 1000),
         }
+
+    def mark(self):
+        """Start watching a move: returns the unwrapped yaw now, and resets the peak tilt."""
+        with self.lock:
+            self.peak_tilt = 0.0
+            return self.yaw_total
+
+    def watch(self):
+        """(unwrapped yaw, peak tilt since mark(), tilt now) while moving. Raises if the stream stopped."""
+        with self.lock:
+            fresh = self.history and time.monotonic() - self.history[-1][0] <= STALE_SECONDS
+            if not fresh:
+                raise RuntimeError(self.error or "no readings from the IMU for over %.1f s" % STALE_SECONDS)
+            newest = self.history[-1]
+            return self.yaw_total, self.peak_tilt, body_tilt(newest[2], newest[3])
 
     def status(self):
         return {"open": self.running, "port": self.port, "packets": self.packets,
