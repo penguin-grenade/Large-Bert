@@ -1,7 +1,7 @@
 # Large Bert's lidar
 
 Large Bert has a **Slamtec RPLIDAR C1** on his top plate, plugged into the Pi over USB (its
-CP2102N adapter shows up as `/dev/ttyUSB0`, 460800 baud). It sees all the way round him out
+CP2102N adapter, opened by its by-id name, 460800 baud). It sees all the way round him out
 to about 12 m, so it covers his sides and back, which the camera and the ultrasonic sensor
 can't see.
 
@@ -65,8 +65,9 @@ holds the port after the first `lidar_scan`).
 ## Settings (top of `bert_lidar.py`)
 
 `BERT_LIDAR_PORT` (environment) picks the port by hand. Otherwise it uses the first entry in
-`/dev/serial/by-id` that looks like a lidar adapter. **If another CP210x USB serial adapter is
-added later (for example for the BNO085 IMU), set `BERT_LIDAR_PORT` to the lidar's by-id path**:
+`/dev/serial/by-id` that looks like a lidar adapter. Since the BNO085 IMU's CP2102 adapter was added
+(2026-11-20) the two swap between `/dev/ttyUSB0` and `ttyUSB1` across boots, so `bert_lidar.py` now opens the
+lidar by its fixed by-id name (`BY_ID`) and never picks the IMU's adapter:
 `/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_6c9d5bfce731f1118411935f30d20014-if00-port0`.
 
 `YAW_OFFSET_DEG`, `HEAD_MASK_DEG`, `HEAD_MASK_CM`, `SELF_RADIUS_CM`, `SCAN_SECONDS` and

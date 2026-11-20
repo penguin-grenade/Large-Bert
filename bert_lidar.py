@@ -30,6 +30,9 @@ import time
 
 # ---- settings ---------------------------------------------------------------
 PORT = os.environ.get("BERT_LIDAR_PORT", "")   # empty: find it (see find_port)
+# The C1's adapter by its fixed name. /dev/ttyUSB0/1 swap between boots with the IMU's adapter
+# (bert_imu.py), so it's opened by this name, never by ttyUSB number.
+BY_ID = "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_6c9d5bfce731f1118411935f30d20014-if00-port0"
 YAW_OFFSET_DEG = 0.0      # lidar angle (clockwise) that points straight ahead of Bert
 HEAD_MASK_DEG = 15.0      # the head shows up within +/- this many degrees of straight ahead...
 HEAD_MASK_CM = 25.0       # ...closer than this (measured 2026-11-16: +/-10 deg, 12-19 cm)
@@ -69,13 +72,20 @@ def find_port():
     Uses /dev/serial/by-id so it stays right when other USB serial things (an IMU adapter) are added."""
     if PORT:
         return PORT
-    ids = sorted(glob.glob("/dev/serial/by-id/*"))
+    if os.path.exists(BY_ID):
+        return BY_ID
+    try:                                  # never mistake the IMU's adapter for a lidar
+        from bert_imu import BY_ID as imu_id
+    except Exception:
+        imu_id = None
+    imu_dev = os.path.realpath(imu_id) if imu_id and os.path.exists(imu_id) else None
+    ids = [p for p in sorted(glob.glob("/dev/serial/by-id/*")) if os.path.realpath(p) != imu_dev]
     for want in ("RPLIDAR", "Silicon_Labs_CP210", "1a86", "CH340", "CH341", "CH343", "FTDI"):
         for path in ids:
             if want.lower() in os.path.basename(path).lower():
                 return path
     for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*"):
-        found = sorted(glob.glob(pattern))
+        found = [p for p in sorted(glob.glob(pattern)) if os.path.realpath(p) != imu_dev]
         if found:
             return found[0]
     raise RuntimeError("no lidar found: no USB serial port (/dev/ttyUSB*, /dev/ttyACM*). Is it plugged in with a data cable?")
