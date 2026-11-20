@@ -450,6 +450,16 @@ class Bert:
             log("Walking without the lidar: %s" % exc)
             return None
 
+    def _walk_imu(self):
+        """The IMU for watching a move, or None if there isn't one (the move goes ahead without it)."""
+        if self.sim:
+            return None
+        try:
+            return self.get_imu()
+        except Exception as exc:
+            log("Moving without the IMU: %s" % exc)
+            return None
+
     def _gait(self, cycles, forward=0, sideways=0, turn=0, speed=B.DEFAULT_SPEED, follow_walls=False,
               max_seconds=None, ahead_stop_cm=None, require_lidar=False):
         """Run gait cycles with all the checks. Returns (cycles done, reason, notes).
@@ -458,11 +468,22 @@ class Bert:
         to keep him parallel to and centred between the walls."""
         self.require_can_move()
         lidar = self._walk_lidar() if (forward or sideways) else None
+        imu = self._walk_imu()
+        yaw_start = None
+        if imu is not None:
+            try:
+                imu.watch()
+                yaw_start = imu.mark()
+            except Exception as exc:
+                self.imu_error = str(exc)
+                imu = None
         if require_lidar and lidar is None:
             raise Refused("this needs the lidar, which isn't working (%s)" % (self.lidar_error or "not available"))
         max_seconds = max_seconds or B.MAX_MOVE_SECONDS
         notes = {"lidar": "on" if lidar else "off (%s)" % (self.lidar_error or "not available"),
+                 "imu": "on" if imu else "off (%s)" % (self.imu_error or "not available"),
                  "steered_deg": 0.0}
+        tip_deg = getattr(B, "TIP_STOP_DEG", 30)
         self.stop_event.clear()
         self.voice_stopped = False
         self.touch()
@@ -481,6 +502,15 @@ class Bert:
                 if distance is not None and 0 < distance < B.MIN_OBSTACLE_CM:
                     reason = "obstacle %.0f cm ahead, stopped (limit %d cm)" % (distance, B.MIN_OBSTACLE_CM)
                     break
+            if imu is not None:
+                try:
+                    _, peak, now_tilt = imu.watch()
+                    if step and peak >= tip_deg:   # the first step may start from sitting, so not before it
+                        reason = "stopped: body tilted %.0f deg during the last step (now %.0f deg); he may be tipping or stuck" % (
+                            peak, now_tilt)
+                        break
+                except Exception:
+                    notes["imu_gaps"] = notes.get("imu_gaps", 0) + 1
             if step and step % 3 == 0 and not self.check_battery(force=True):
                 reason = "battery low, stopped"
                 break
@@ -511,6 +541,14 @@ class Bert:
         if not self.battery_low:
             self.hw.stand()
         self.touch()
+        if imu is not None:
+            try:
+                yaw_now, peak, now_tilt = imu.watch()
+                notes["yaw_change_deg"] = yaw_now - yaw_start
+                notes["max_tilt_deg"] = peak
+                notes["tilt_now_deg"] = now_tilt
+            except Exception:
+                pass
         if lidar is not None:
             try:
                 import bert_lidar
@@ -537,6 +575,7 @@ class Bert:
         if follow_walls:
             text += " Steered %+.0f deg to follow the walls (%s)." % (
                 notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
+        text += self._imu_text(notes)
         if "around_cm" in notes:
             text += " Lidar now, closest cm: %s." % notes["around_cm"]
         if self.battery_getting_low():
@@ -562,12 +601,23 @@ class Bert:
         if follow_walls:
             text += " Steered %+.0f deg in all to follow the walls (%s)." % (
                 notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
+        text += self._imu_text(notes)
         if "around_cm" in notes:
             text += " Lidar now, closest cm: %s." % notes["around_cm"]
         if self.battery_getting_low():
             text += " Battery getting low (%s V): expect weaker steps and more drift; charge soon." % self.last_volts[0]
         if notes.get("lidar_gaps"):
             text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
+        return text
+
+    @staticmethod
+    def _imu_text(notes):
+        if "yaw_change_deg" not in notes:
+            return " IMU %s." % notes["imu"] if notes["imu"] != "on" else ""
+        text = " IMU: heading changed %+.0f deg (measured; sign not yet checked against left/right), most tilt %.0f deg." % (
+            notes["yaw_change_deg"], notes["max_tilt_deg"])
+        if notes.get("imu_gaps"):
+            text += " (IMU had no fresh readings for %d step(s))" % notes["imu_gaps"]
         return text
 
     def turn(self, degrees, speed):
@@ -580,9 +630,10 @@ class Bert:
             return "Turn too small (the smallest turn is about %d degrees)." % max(1, round(per_cycle / 10))
         value = min(value, 10)
         # cat_patrol.Robot.walk applies TURN_SIGN; FakeHardware just logs
-        done, reason, _ = self._gait(cycles, turn=value if degrees > 0 else -value, speed=int(clamp(speed, 2, B.MAX_SPEED)))
-        return "Turned about %+d degrees (%d of %d cycles, positive = left): %s." % (
-            int(round(done * per_cycle * value / 10.0)) * (1 if degrees > 0 else -1), done, cycles, reason)
+        done, reason, notes = self._gait(cycles, turn=value if degrees > 0 else -value, speed=int(clamp(speed, 2, B.MAX_SPEED)))
+        return "Turned about %+d degrees by step count (%d of %d cycles, positive = left): %s.%s" % (
+            int(round(done * per_cycle * value / 10.0)) * (1 if degrees > 0 else -1), done, cycles, reason,
+            self._imu_text(notes))
 
     def stop(self):
         self.stop_event.set()
@@ -916,6 +967,8 @@ Be careful: it is a physical machine near people and cats.
 - lidar_scan shows how far things are in every direction (his head hides the first ~25 cm straight
   ahead; the ultrasonic covers that). Use it before turning, crab-walking or going through doorways,
   since the camera and sonar only see ahead.
+- Walks, cruises and turns also watch the IMU through every step: they stop if his body tilts past
+  30 degrees, and report how far his heading actually changed (better than step counting).
 - orientation reads the IMU: pitch, roll, tilt from level, whether he's upright, and yaw (degrees turned
   since power-on, not a compass). Use it to check a turn really went as far as asked, or if he may have tipped.
 - When you're done, call relax so the servos rest."""

@@ -14,6 +14,8 @@ MAX_STEP_LENGTH = 30         # Freenove allows 35; a bit less is kinder to the l
 MAX_TURN_DEGREES = 180       # biggest single turn() call
 CM_PER_STEP_AT_LENGTH_30 = 10.4  # measured: 5 cycles at length 30 went 52 cm (20.5 in); scales with length
 MIN_OBSTACLE_CM = 25         # refuse to step forward when the ultrasonic sees something closer
+TIP_STOP_DEG = 30            # IMU: stop a walk if the body tilts this far from level (he sits ~2.5 deg nose-down,
+                             # body_tilt allows 15); the IMU reads all through every step, not just between steps
 
 # ---- cruise: one long lidar-guided walk forward ------------------------------
 CRUISE_MAX_CM = 400          # longest single cruise
