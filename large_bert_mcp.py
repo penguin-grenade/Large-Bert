@@ -2,7 +2,7 @@
 """Large Bert's MCP server: lets Claude drive the Freenove Big Hexapod.
 
 Tools: status, walk, turn, stop, stand_up, relax, look, snapshot, who_is_there,
-body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen, lidar_scan, cruise.
+body_tilt, lights, beep, patrol_start, patrol_stop, patrol_status, listen, lidar_scan, cruise, orientation.
 
 Safety (settings in bert_config.py, battery cut-offs from patrol_config.py):
   * every walk/turn is capped in steps and seconds, and checks the stop flag,
@@ -339,6 +339,8 @@ class Bert:
             self.ears_error = "turned off (--no-ears)"
         self.lidar = None
         self.lidar_error = None
+        self.imu = None
+        self.imu_error = None
         self.check_battery(force=True)
         threading.Thread(target=self._watchdog, daemon=True).start()
 
@@ -698,6 +700,35 @@ class Bert:
                 raise Refused("the lidar isn't working: %s" % exc)
         return self.lidar
 
+    # ---- IMU (BNO085) ---------------------------------------------------------
+    def get_imu(self):
+        if self.imu is not None and not self.imu.running:   # unplugged: reopen
+            self.imu_error = self.imu.error
+            self.imu.close()
+            self.imu = None
+        if self.imu is None:
+            if self.sim:
+                raise Refused("there is no IMU in the simulator")
+            try:
+                import bert_imu
+                self.imu = bert_imu.Imu(log=lambda m: log("[imu] " + m))
+                self.imu_error = None
+                time.sleep(0.3)           # let the first packets arrive
+            except Exception as exc:
+                self.imu_error = str(exc)
+                raise Refused("the IMU isn't working: %s" % exc)
+        return self.imu
+
+    def orientation(self):
+        imu = self.get_imu()
+        try:
+            reading = imu.read()
+        except Exception as exc:
+            self.imu_error = str(exc)
+            raise Refused("the IMU isn't sending readings: %s" % exc)
+        reading["legs"] = "relaxed" if self.relaxed else "standing"
+        return reading
+
     def lidar_scan(self, picture):
         import bert_lidar
         lidar = self.get_lidar()
@@ -765,6 +796,7 @@ class Bert:
             "quiet_hours_now": in_quiet_hours(),
             "ears": self.ears.status() if self.ears else {"mic_ok": False, "error": self.ears_error},
             "lidar": self.lidar.status() if self.lidar else {"open": False, "error": self.lidar_error},
+            "imu": self.imu.status() if self.imu else {"open": False, "error": self.imu_error},
             "limits": {"max_steps_per_call": B.MAX_STEPS_PER_CALL, "max_move_seconds": B.MAX_MOVE_SECONDS,
                        "max_speed": B.MAX_SPEED, "max_step_length": B.MAX_STEP_LENGTH,
                        "min_obstacle_cm": B.MIN_OBSTACLE_CM, "idle_relax_seconds": B.IDLE_RELAX_SECONDS},
@@ -845,6 +877,11 @@ class Bert:
                 self.lidar.close()
             except Exception:
                 pass
+        if self.imu is not None:
+            try:
+                self.imu.close()
+            except Exception:
+                pass
         if self.camera is not None:
             try:
                 self.camera.close()
@@ -879,6 +916,8 @@ Be careful: it is a physical machine near people and cats.
 - lidar_scan shows how far things are in every direction (his head hides the first ~25 cm straight
   ahead; the ultrasonic covers that). Use it before turning, crab-walking or going through doorways,
   since the camera and sonar only see ahead.
+- orientation reads the IMU: pitch, roll, tilt from level, whether he's upright, and yaw (degrees turned
+  since power-on, not a compass). Use it to check a turn really went as far as asked, or if he may have tipped.
 - When you're done, call relax so the servos rest."""
 
 mcp = _Server("Large Bert", instructions=INSTRUCTIONS)
@@ -1056,6 +1095,18 @@ async def lidar_scan(picture: bool = False) -> list:
     if png:
         out.append(Image(data=png, format="png"))
     return out
+
+
+@mcp.tool()
+async def orientation() -> dict:
+    """Read Large Bert's IMU (a BNO085, ~100 readings a second): pitch_deg and roll_deg (body tilt),
+    tilt_from_level_deg, upright (False = probably fallen over), yaw_deg (how far he has turned since
+    the IMU powered up; not a compass heading, and it drifts slowly), and accel_g (about 1 g total when still).
+    Instant; works whether he's standing or relaxed."""
+    try:
+        return await run_blocking(BERT.orientation)
+    except Refused as exc:
+        return {"refused": str(exc)}
 
 
 @mcp.tool()
