@@ -6,7 +6,7 @@ and BNO P0 jumpered to BNO 3Vo (that picks RVC mode at power-up). Nothing on the
 
 In RVC mode the BNO streams ~100 packets a second without being asked: 0xAA 0xAA, then index,
 yaw, pitch, roll (int16, 0.01 degree), x/y/z acceleration (int16, mg), 3 spare bytes and a checksum.
-Yaw is relative to where he faced at power-up (no magnetometer in RVC mode), so it's good for
+Yaw is positive = LEFT (anticlockwise seen from above, like turn()), relative to where he faced at power-up (no magnetometer in RVC mode), so it's good for
 "how far have I turned" but not for compass headings.
 
 Try it on its own (stop the MCP server first: only one program can open the port):
@@ -25,6 +25,8 @@ PORT = os.environ.get("BERT_IMU_PORT", "")   # empty: find it (see find_port)
 # between boots with the lidar's adapter, so always open it by this name.
 BY_ID = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
 BAUD = 115200
+YAW_SIGN = -1             # the BNO counts left turns as negative (checked 2026-11-20: a hand turn left read
+                          # -44 deg); flipped so yaw is Bert's convention everywhere: positive = LEFT
 STALE_SECONDS = 0.5       # a reading older than this means the stream stopped
 SMOOTH_SECONDS = 0.1      # average this much of the newest stream (~10 packets) for pitch/roll/accel
 UPRIGHT_MAX_TILT_DEG = 45 # more tilt than this from level and he's probably fallen over
@@ -111,6 +113,7 @@ class Imu:
                     buf = buf[start + 1:]
                     continue
                 buf = buf[start + 19:]
+                reading = (YAW_SIGN * reading[0],) + reading[1:]
                 now = time.monotonic()
                 yaw, pitch, roll = reading[0], reading[1], reading[2]
                 tilt = body_tilt(pitch, roll)

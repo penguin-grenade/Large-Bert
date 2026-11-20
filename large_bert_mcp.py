@@ -614,7 +614,7 @@ class Bert:
     def _imu_text(notes):
         if "yaw_change_deg" not in notes:
             return " IMU %s." % notes["imu"] if notes["imu"] != "on" else ""
-        text = " IMU: heading changed %+.0f deg (measured; sign not yet checked against left/right), most tilt %.0f deg." % (
+        text = " IMU: heading actually changed %+.0f deg (positive = left), most tilt %.0f deg." % (
             notes["yaw_change_deg"], notes["max_tilt_deg"])
         if notes.get("imu_gaps"):
             text += " (IMU had no fresh readings for %d step(s))" % notes["imu_gaps"]
@@ -1154,7 +1154,7 @@ async def lidar_scan(picture: bool = False) -> list:
 async def orientation() -> dict:
     """Read Large Bert's IMU (a BNO085, ~100 readings a second): pitch_deg and roll_deg (body tilt),
     tilt_from_level_deg, upright (False = probably fallen over), yaw_deg (how far he has turned since
-    the IMU powered up; not a compass heading, and it drifts slowly), and accel_g (about 1 g total when still).
+    the IMU powered up, positive = left; not a compass heading, and it drifts slowly), and accel_g (about 1 g total when still).
     Instant; works whether he's standing or relaxed."""
     try:
         return await run_blocking(BERT.orientation)
