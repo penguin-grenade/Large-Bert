@@ -73,7 +73,9 @@ class Imu:
         buf = b""
         while self.running:
             try:
-                chunk = self.ser.read(256)
+                # whatever has arrived (at least 1 byte, waiting up to the 0.2 s timeout): a fixed
+                # read(256) would wait for ~13 packets and timestamp them in bursts
+                chunk = self.ser.read(max(1, self.ser.in_waiting))
             except Exception as exc:        # unplugged
                 self.error = str(exc)
                 self.running = False
