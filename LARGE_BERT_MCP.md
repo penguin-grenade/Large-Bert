@@ -96,6 +96,8 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 | `lidar_scan` | Closest thing in 8 directions all round him from the lidar, with an optional top-down map. See [LIDAR.md](LIDAR.md) |
 | `orientation` | Pitch, roll, tilt from level, upright or not, and yaw turned since power-on, from the BNO085 IMU (`bert_imu.py`) |
 
+With the IMU plugged in, `walk` and `cruise` hold a straight heading: before each step they compare the IMU's yaw with the heading he started on and add a small turn to cancel the drift. Uncorrected, he drifts about 1.5 degrees left per step. The reply says how much the hold steered. Turn it off or tune it with `HEADING_HOLD`, `HEADING_HOLD_GAIN` and `HEADING_HOLD_MAX_TURN` in `bert_config.py`.
+
 ## Safety limits (in `bert_config.py`)
 - Each walk or turn is capped at **10 gait cycles and 25 seconds**, speed 8, step length 30.
 - Going forward, he stops if the ultrasonic sees something **closer than 25 cm**.

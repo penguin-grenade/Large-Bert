@@ -16,6 +16,9 @@ CM_PER_STEP_AT_LENGTH_30 = 10.4  # measured: 5 cycles at length 30 went 52 cm (2
 MIN_OBSTACLE_CM = 25         # refuse to step forward when the ultrasonic sees something closer
 TIP_STOP_DEG = 30            # IMU: stop a walk if the body tilts this far from level (he sits ~2.5 deg nose-down,
                              # body_tilt allows 15); the IMU reads all through every step, not just between steps
+HEADING_HOLD = True          # IMU: walk and cruise steer back to the heading they started on (he drifts ~1.5 deg/step left)
+HEADING_HOLD_GAIN = 0.8      # share of the heading error corrected on the next step
+HEADING_HOLD_MAX_TURN = 3    # most gait turn per step for the correction (1 = ~3 deg)
 
 # ---- cruise: one long lidar-guided walk forward ------------------------------
 CRUISE_MAX_CM = 400          # longest single cruise
