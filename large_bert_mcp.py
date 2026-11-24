@@ -482,7 +482,11 @@ class Bert:
         max_seconds = max_seconds or B.MAX_MOVE_SECONDS
         notes = {"lidar": "on" if lidar else "off (%s)" % (self.lidar_error or "not available"),
                  "imu": "on" if imu else "off (%s)" % (self.imu_error or "not available"),
-                 "steered_deg": 0.0}
+                 "steered_deg": 0.0, "held_deg": 0.0}
+        per_value = getattr(C, "DEG_PER_TURN_CYCLE", 31) / 10.0   # degrees one unit of gait turn rotates per cycle
+        # heading hold: walking (not turning) with the IMU, steer each cycle back to the heading he started on
+        hold = imu is not None and turn == 0 and (forward or sideways) and getattr(B, "HEADING_HOLD", True)
+        yaw_now = None
         tip_deg = getattr(B, "TIP_STOP_DEG", 30)
         self.stop_event.clear()
         self.voice_stopped = False
@@ -504,12 +508,13 @@ class Bert:
                     break
             if imu is not None:
                 try:
-                    _, peak, now_tilt = imu.watch()
+                    yaw_now, peak, now_tilt = imu.watch()
                     if step and peak >= tip_deg:   # the first step may start from sitting, so not before it
                         reason = "stopped: body tilted %.0f deg during the last step (now %.0f deg); he may be tipping or stuck" % (
                             peak, now_tilt)
                         break
                 except Exception:
+                    yaw_now = None
                     notes["imu_gaps"] = notes.get("imu_gaps", 0) + 1
             if step and step % 3 == 0 and not self.check_battery(force=True):
                 reason = "battery low, stopped"
@@ -530,11 +535,17 @@ class Bert:
                         break
                     if follow_walls and forward > 0:
                         degrees, why = bert_lidar.wall_steer(points)
-                        per_value = getattr(C, "DEG_PER_TURN_CYCLE", 31) / 10.0
                         cycle_turn = int(round(degrees / per_value))
                         notes["steered_deg"] += cycle_turn * per_value
                         if why:
                             notes["walls"] = why
+            if hold and cycle_turn == 0 and yaw_now is not None:
+                # target = start heading plus whatever wall-following deliberately steered
+                error = yaw_now - (yaw_start + notes["steered_deg"])      # + = drifted left
+                limit = getattr(B, "HEADING_HOLD_MAX_TURN", 3)
+                cycle_turn = int(clamp(round(-error * getattr(B, "HEADING_HOLD_GAIN", 0.8) / per_value),
+                                       -limit, limit))
+                notes["held_deg"] += cycle_turn * per_value
             self.hw.walk(forward, sideways, cycle_turn, speed)
             done += 1
             self.touch()
@@ -616,6 +627,8 @@ class Bert:
             return " IMU %s." % notes["imu"] if notes["imu"] != "on" else ""
         text = " IMU: heading actually changed %+.0f deg (positive = left), most tilt %.0f deg." % (
             notes["yaw_change_deg"], notes["max_tilt_deg"])
+        if notes.get("held_deg"):
+            text += " Heading hold steered %+.0f deg in all to keep him straight." % notes["held_deg"]
         if notes.get("imu_gaps"):
             text += " (IMU had no fresh readings for %d step(s))" % notes["imu_gaps"]
         return text
