@@ -19,11 +19,17 @@ TIP_STOP_DEG = 30            # IMU: stop a walk if the body tilts this far from 
 HEADING_HOLD = True          # IMU: walk and cruise steer back to the heading they started on (he drifts ~1.5 deg/step left)
 HEADING_HOLD_GAIN = 0.8      # share of the heading error corrected on the next step
 HEADING_HOLD_MAX_TURN = 3    # most gait turn per step for the correction (1 = ~3 deg)
+FAST_SERVO_WRITES = True     # send each gait frame's 18 servo positions as 4 I2C block writes instead of
+                             # 72 one-byte writes (bert_fastservo.py); False = Freenove's original writes.
+                             # Patio 2026-11-27: a frame went from 38 to 20 ms, so every gait speed is about
+                             # twice as fast in time; speed 2-8 keep their full step length
 
 # ---- cruise: one long lidar-guided walk forward ------------------------------
 CRUISE_MAX_CM = 400          # longest single cruise
 CRUISE_MAX_STEPS = 40        # ...and never more gait cycles than this
-CRUISE_SPEED = 10            # default cruise gait speed (2..MAX_SPEED)
+CRUISE_SPEED = 8             # default cruise gait speed (2..MAX_SPEED). With FAST_SERVO_WRITES, 8 goes as fast
+                             # as 10 used to (about 11 cm/s) with full-length steps; at 10 he's ~20% faster
+                             # but the legs can't keep up, steps shrink by a third and distance estimates run long
 CRUISE_STEP_LENGTH = 35      # cruise stride: Freenove's longest (walk stays at MAX_STEP_LENGTH)
 CRUISE_MAX_SECONDS = 120     # ...or longer than this
 CRUISE_STOP_CM = 45          # default: stop when something in his path is this close (from the lidar)

@@ -98,6 +98,16 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 
 With the IMU plugged in, `walk` and `cruise` hold a straight heading: before each step they compare the IMU's yaw with the heading he started on and add a small turn to cancel the drift. Uncorrected, he drifts about 1.5 degrees left per step. The reply says how much the hold steered. Turn it off or tune it with `HEADING_HOLD`, `HEADING_HOLD_GAIN` and `HEADING_HOLD_MAX_TURN` in `bert_config.py`.
 
+### Faster servo writes
+
+Each gait frame sets 18 leg servos. Freenove's code sends every servo as 4 separate one-byte I2C messages, 72 per frame, which took most of a 38 ms frame. `bert_fastservo.py` sends the same values as 4 block writes per frame instead (the PCA9685 boards' auto-increment mode), and a frame now takes about 20 ms. The servo positions are exactly the same; only the timing changes. Turn it off with `FAST_SERVO_WRITES = False` in `bert_config.py`.
+
+Measured on the patio (2026-11-27, 4 steps at length 30): speed 6 went from 3.9 to 7.9 cm/s, and speed 8 now matches the old speed 10 (about 11 cm/s) with full-length steps. Speed 10 is only about 20% faster (13 cm/s) because the legs can't keep up and the steps get a third shorter, so `cruise` now defaults to speed 8. `speed_bench.py` repeats the comparison:
+
+```bash
+sudo /home/pi/bert-venv/bin/python speed_bench.py old:10 fast:10 old:6 fast:6 --steps 4 --back
+```
+
 ## Safety limits (in `bert_config.py`)
 - Each walk or turn is capped at **10 gait cycles and 25 seconds**, speed 8, step length 30.
 - Going forward, he stops if the ultrasonic sees something **closer than 25 cm**.

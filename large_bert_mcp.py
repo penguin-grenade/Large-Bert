@@ -137,6 +137,13 @@ class Hardware:
         self._home_points = copy.deepcopy(self.control.body_points)
         self._home_height = self.control.body_height
         self.lift = getattr(B, "STEP_LIFT_MM", 40)
+        self.fast_servo = None
+        if getattr(B, "FAST_SERVO_WRITES", True):   # block I2C writes: 72 I2C transactions per gait frame -> 4 (bert_fastservo.py)
+            try:
+                import bert_fastservo
+                self.fast_servo = bert_fastservo.install(self.control, log)
+            except Exception as exc:
+                log("Fast servo writes off: %s" % exc)
 
     def walk(self, forward, sideways, turn, speed):
         self.robot.walk(forward=forward, sideways=sideways, turn=turn, speed=speed, lift=self.lift)
@@ -1030,7 +1037,7 @@ async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int =
 @mcp.tool()
 async def cruise(distance_cm: int = 300, speed: int = B.CRUISE_SPEED, stop_cm: int = B.CRUISE_STOP_CM,
                  follow_walls: bool = True) -> str:
-    """Walk forward in one go, up to 400 cm (40 steps, 120 s). speed 2..10, default 10, with his longest stride, with the lidar checking before every step.
+    """Walk forward in one go, up to 400 cm (40 steps, 120 s). speed 2..10, default 8, with his longest stride, with the lidar checking before every step.
     Use it for long straight runs such as a hallway, instead of many short walks. follow_walls=True steers
     each step to stay parallel to and centred between straight walls (fixes his left drift).
     Stops by itself when something in his path is closer than stop_cm (30..300, default 45, measured from
