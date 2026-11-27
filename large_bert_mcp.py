@@ -96,6 +96,23 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 
+GAITS = ("tripod", "wave")
+
+
+def check_gait(gait):
+    gait = (gait or "tripod").strip().lower()
+    if gait not in GAITS:
+        raise Refused("unknown gait %r: use %s" % (gait, " or ".join(GAITS)))
+    return gait
+
+
+def gait_scale(gait):
+    """How far one cycle of this gait goes compared with a tripod cycle of the same step length."""
+    if gait == "wave":
+        return getattr(B, "WAVE_STRIDE_FACTOR", 5.0 / 3.0) / 2.0   # tripod moves 2 step lengths a cycle
+    return 1.0
+
+
 def in_quiet_hours():
     hours = getattr(C, "QUIET_HOURS", None)
     if not hours:
@@ -138,8 +155,14 @@ class Hardware:
         self._home_height = self.control.body_height
         self.lift = getattr(B, "STEP_LIFT_MM", 40)
 
-    def walk(self, forward, sideways, turn, speed):
-        self.robot.walk(forward=forward, sideways=sideways, turn=turn, speed=speed, lift=self.lift)
+    def walk(self, forward, sideways, turn, speed, gait="tripod"):
+        if gait == "wave":                   # experimental: one leg in the air at a time (bert_gait.py)
+            import bert_gait
+            self.robot.power_on()
+            bert_gait.wave_cycle(self.control, sideways, forward, speed, clamp(turn, -10, 10) * C.TURN_SIGN,
+                                 lift=self.lift)
+        else:
+            self.robot.walk(forward=forward, sideways=sideways, turn=turn, speed=speed, lift=self.lift)
 
     def set_height(self, height_mm, lift_mm):
         """Feet height_mm below the body (taller = more ground clearance). Kept for later stands and walks."""
@@ -200,8 +223,8 @@ class FakeHardware:
         self.robot = None
         self.volts = (7.6, 7.6)
 
-    def walk(self, forward, sideways, turn, speed):
-        log("[sim] gait cycle forward=%s sideways=%s turn=%s speed=%s" % (forward, sideways, turn, speed))
+    def walk(self, forward, sideways, turn, speed, gait="tripod"):
+        log("[sim] %s gait cycle forward=%s sideways=%s turn=%s speed=%s" % (gait, forward, sideways, turn, speed))
         time.sleep(0.2)
 
     def stand(self):
@@ -461,7 +484,7 @@ class Bert:
             return None
 
     def _gait(self, cycles, forward=0, sideways=0, turn=0, speed=B.DEFAULT_SPEED, follow_walls=False,
-              max_seconds=None, ahead_stop_cm=None, require_lidar=False):
+              max_seconds=None, ahead_stop_cm=None, require_lidar=False, gait="tripod"):
         """Run gait cycles with all the checks. Returns (cycles done, reason, notes).
         While walking, the lidar streams: before every cycle the newest readings are checked for
         anything in his path or brushing his sides, and with follow_walls the turn is set each cycle
@@ -480,10 +503,12 @@ class Bert:
         if require_lidar and lidar is None:
             raise Refused("this needs the lidar, which isn't working (%s)" % (self.lidar_error or "not available"))
         max_seconds = max_seconds or B.MAX_MOVE_SECONDS
-        notes = {"lidar": "on" if lidar else "off (%s)" % (self.lidar_error or "not available"),
+        notes = {"seconds": 0.0, "volts_before": self.last_volts[0],
+                 "lidar": "on" if lidar else "off (%s)" % (self.lidar_error or "not available"),
                  "imu": "on" if imu else "off (%s)" % (self.imu_error or "not available"),
                  "steered_deg": 0.0, "held_deg": 0.0}
-        per_value = getattr(C, "DEG_PER_TURN_CYCLE", 31) / 10.0   # degrees one unit of gait turn rotates per cycle
+        # degrees one unit of gait turn rotates per cycle
+        per_value = getattr(C, "DEG_PER_TURN_CYCLE", 31) / 10.0 * gait_scale(gait)
         # heading hold: walking (not turning) with the IMU, steer each cycle back to the heading he started on
         hold = imu is not None and turn == 0 and (forward or sideways) and getattr(B, "HEADING_HOLD", True)
         yaw_now = None
@@ -546,9 +571,10 @@ class Bert:
                 cycle_turn = int(clamp(round(-error * getattr(B, "HEADING_HOLD_GAIN", 0.8) / per_value),
                                        -limit, limit))
                 notes["held_deg"] += cycle_turn * per_value
-            self.hw.walk(forward, sideways, cycle_turn, speed)
+            self.hw.walk(forward, sideways, cycle_turn, speed, gait)
             done += 1
             self.touch()
+        notes["seconds"] = time.time() - start
         if not self.battery_low:
             self.hw.stand()
         self.touch()
@@ -570,7 +596,8 @@ class Bert:
                 pass
         return done, reason, notes
 
-    def walk(self, forward, sideways, steps, speed, follow_walls=False):
+    def walk(self, forward, sideways, steps, speed, follow_walls=False, gait="tripod"):
+        gait = check_gait(gait)
         steps = int(clamp(steps, 1, B.MAX_STEPS_PER_CALL))
         speed = int(clamp(speed, 2, B.MAX_SPEED))
         forward = int(clamp(forward, -B.MAX_STEP_LENGTH, B.MAX_STEP_LENGTH))
@@ -578,11 +605,12 @@ class Bert:
         if forward == 0 and sideways == 0:
             return "Nothing to do: forward and sideways are both 0."
         done, reason, notes = self._gait(steps, forward=forward, sideways=sideways, speed=speed,
-                                         follow_walls=follow_walls)
+                                         follow_walls=follow_walls, gait=gait)
         length = math.hypot(forward, sideways)
-        cm = done * length / 30.0 * getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4)
+        cm = done * length / 30.0 * getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4) * gait_scale(gait)
         text = "Walked %d of %d steps (forward %d, sideways %d, speed %d), about %.0f cm (%.0f in): %s." % (
             done, steps, forward, sideways, speed, cm, cm / 2.54, reason)
+        text += self._gait_text(gait, notes)
         if follow_walls:
             text += " Steered %+.0f deg to follow the walls (%s)." % (
                 notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
@@ -597,18 +625,21 @@ class Bert:
             text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
         return text
 
-    def cruise(self, distance_cm, speed, stop_cm, follow_walls):
+    def cruise(self, distance_cm, speed, stop_cm, follow_walls, gait="tripod"):
         """One long walk forward, guided by the lidar every step."""
+        gait = check_gait(gait)
         length = getattr(B, "CRUISE_STEP_LENGTH", 30)
-        per_step = getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4) * length / 30.0
+        per_step = getattr(B, "CM_PER_STEP_AT_LENGTH_30", 10.4) * length / 30.0 * gait_scale(gait)
         distance_cm = clamp(distance_cm, per_step, B.CRUISE_MAX_CM)
         steps = int(min(math.ceil(distance_cm / per_step), B.CRUISE_MAX_STEPS))
         stop_cm = clamp(stop_cm, B.CRUISE_MIN_STOP_CM, 300)
         speed = int(clamp(speed, 2, B.MAX_SPEED))
         done, reason, notes = self._gait(steps, forward=length, speed=speed, follow_walls=follow_walls,
-                                         max_seconds=B.CRUISE_MAX_SECONDS, ahead_stop_cm=stop_cm, require_lidar=True)
+                                         max_seconds=B.CRUISE_MAX_SECONDS, ahead_stop_cm=stop_cm, require_lidar=True,
+                                         gait=gait)
         cm = done * per_step
         text = "Cruised %d of %d steps, about %.0f cm (%.0f in): %s." % (done, steps, cm, cm / 2.54, reason)
+        text += self._gait_text(gait, notes)
         if follow_walls:
             text += " Steered %+.0f deg in all to follow the walls (%s)." % (
                 notes["steered_deg"], notes.get("walls", "no straight walls in reach, went straight"))
@@ -620,6 +651,14 @@ class Bert:
         if notes.get("lidar_gaps"):
             text += " (lidar had no fresh readings for %d step(s))" % notes["lidar_gaps"]
         return text
+
+    def _gait_text(self, gait, notes):
+        """For the wave-gait experiment: which gait, how long it took and the servo battery before/after."""
+        if gait == "tripod":
+            return ""
+        self.check_battery(force=True)
+        return " Gait %s: %.1f s of walking, servo battery %s V before, %s V after." % (
+            gait, notes.get("seconds", 0.0), notes.get("volts_before"), self.last_volts[0])
 
     @staticmethod
     def _imu_text(notes):
@@ -633,9 +672,10 @@ class Bert:
             text += " (IMU had no fresh readings for %d step(s))" % notes["imu_gaps"]
         return text
 
-    def turn(self, degrees, speed):
+    def turn(self, degrees, speed, gait="tripod"):
+        gait = check_gait(gait)
         degrees = clamp(degrees, -B.MAX_TURN_DEGREES, B.MAX_TURN_DEGREES)
-        per_cycle = getattr(C, "DEG_PER_TURN_CYCLE", 10)
+        per_cycle = getattr(C, "DEG_PER_TURN_CYCLE", 10) * gait_scale(gait)
         cycles = min(int(math.ceil(abs(degrees) / per_cycle)), B.MAX_STEPS_PER_CALL * 2)
         # a full cycle is gait turn value 10; spread the angle evenly so small turns are possible
         value = int(round(10 * abs(degrees) / (cycles * per_cycle))) if cycles else 0
@@ -643,7 +683,8 @@ class Bert:
             return "Turn too small (the smallest turn is about %d degrees)." % max(1, round(per_cycle / 10))
         value = min(value, 10)
         # cat_patrol.Robot.walk applies TURN_SIGN; FakeHardware just logs
-        done, reason, notes = self._gait(cycles, turn=value if degrees > 0 else -value, speed=int(clamp(speed, 2, B.MAX_SPEED)))
+        done, reason, notes = self._gait(cycles, turn=value if degrees > 0 else -value, speed=int(clamp(speed, 2, B.MAX_SPEED)),
+                                         gait=gait)
         return "Turned about %+d degrees by step count (%d of %d cycles, positive = left): %s.%s" % (
             int(round(done * per_cycle * value / 10.0)) * (1 if degrees > 0 else -1), done, cycles, reason,
             self._imu_text(notes))
@@ -1014,7 +1055,7 @@ async def status() -> dict:
 
 @mcp.tool()
 async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int = B.DEFAULT_SPEED,
-               follow_walls: bool = False) -> str:
+               follow_walls: bool = False, gait: str = "tripod") -> str:
     """Walk a few gait cycles. forward: step length -30..30 (negative = backwards).
     sideways: -30..30 (positive = crab-walk right, negative = left). steps: 1..10 gait cycles
     (each about 10 cm (4 in) at length 30, scaling with length). speed: 2 (slow) .. 10.
@@ -1023,27 +1064,32 @@ async def walk(forward: int = 0, sideways: int = 0, steps: int = 2, speed: int =
     going forward, a stop command, low battery, or the time limit. The result ends with the closest
     distances all round, so there's no need for a lidar_scan between walks.
     follow_walls=True (hallways, going forward): each step steers a little to stay parallel to the
-    walls and drift back to the middle, which corrects his habit of drifting left."""
-    return await call(BERT.walk, forward, sideways, steps, speed, follow_walls)
+    walls and drift back to the middle, which corrects his habit of drifting left.
+    gait: "tripod" (normal: three legs swing together) or "wave" (experimental: one leg at a time,
+    five always down; steadier and easier on the battery but each step covers less ground; the result
+    adds the walking time and servo battery before/after)."""
+    return await call(BERT.walk, forward, sideways, steps, speed, follow_walls, gait)
 
 
 @mcp.tool()
 async def cruise(distance_cm: int = 300, speed: int = B.CRUISE_SPEED, stop_cm: int = B.CRUISE_STOP_CM,
-                 follow_walls: bool = True) -> str:
+                 follow_walls: bool = True, gait: str = "tripod") -> str:
     """Walk forward in one go, up to 400 cm (40 steps, 120 s). speed 2..10, default 10, with his longest stride, with the lidar checking before every step.
     Use it for long straight runs such as a hallway, instead of many short walks. follow_walls=True steers
     each step to stay parallel to and centred between straight walls (fixes his left drift).
     Stops by itself when something in his path is closer than stop_cm (30..300, default 45, measured from
     the lidar on his back), something comes within a few cm of his side feet, the ultrasonic sees
     something under 25 cm, someone says "Bert, stop" or stop is called, or the battery is low.
-    Distance is estimated from step count and can be off on rugs. Needs the lidar."""
-    return await call(BERT.cruise, distance_cm, speed, stop_cm, follow_walls)
+    Distance is estimated from step count and can be off on rugs. Needs the lidar.
+    gait: "tripod" (normal) or "wave" (experimental, one leg at a time; see walk)."""
+    return await call(BERT.cruise, distance_cm, speed, stop_cm, follow_walls, gait)
 
 
 @mcp.tool()
-async def turn(degrees: int, speed: int = B.DEFAULT_SPEED) -> str:
-    """Turn on the spot. Positive = left (anticlockwise seen from above), negative = right. Up to ±180, approximate."""
-    return await call(BERT.turn, degrees, speed)
+async def turn(degrees: int, speed: int = B.DEFAULT_SPEED, gait: str = "tripod") -> str:
+    """Turn on the spot. Positive = left (anticlockwise seen from above), negative = right. Up to ±180, approximate.
+    gait: "tripod" (normal) or "wave" (experimental, one leg at a time; turn amounts not calibrated yet)."""
+    return await call(BERT.turn, degrees, speed, gait)
 
 
 @mcp.tool()

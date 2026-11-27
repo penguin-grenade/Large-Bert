@@ -20,6 +20,13 @@ HEADING_HOLD = True          # IMU: walk and cruise steer back to the heading th
 HEADING_HOLD_GAIN = 0.8      # share of the heading error corrected on the next step
 HEADING_HOLD_MAX_TURN = 3    # most gait turn per step for the correction (1 = ~3 deg)
 
+# ---- Wave gait (experimental, gait="wave"): one leg in the air at a time, see bert_gait.py ----
+WAVE_FRAMES_SLOW = 24        # frames per leg at speed 2 (lift, swing, lower); about 10 ms + servo writes each
+WAVE_FRAMES_FAST = 6         # ...at speed 10. Fewer = quicker swing, but the servos can only move so fast
+WAVE_STRIDE_FACTOR = 5 / 3   # body travel per cycle in step lengths (tripod: 2). The foot furthest back
+                             # reaches stride * factor behind home, so keep it under ~2
+WAVE_FRAME_DELAY = 0.01      # pause after each frame, like Freenove's gait
+
 # ---- cruise: one long lidar-guided walk forward ------------------------------
 CRUISE_MAX_CM = 400          # longest single cruise
 CRUISE_MAX_STEPS = 40        # ...and never more gait cycles than this

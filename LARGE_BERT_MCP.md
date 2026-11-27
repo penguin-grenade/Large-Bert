@@ -81,7 +81,7 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 | Tool | What it does |
 |---|---|
 | `status` | Battery, distance ahead, legs up or relaxed, head angle, patrol state, limits |
-| `walk` | 1 to 10 gait cycles forward, back or sideways |
+| `walk` | 1 to 10 gait cycles forward, back or sideways (tripod gait, or the experimental wave gait) |
 | `turn` | Turn on the spot, positive is left |
 | `stop` | Emergency stop. Also ends the patrol |
 | `stand_up` / `relax` | Stand level, or let the servos go limp |
@@ -97,6 +97,16 @@ Then try: *"Check Large Bert's battery, take a picture, and walk him two steps f
 | `orientation` | Pitch, roll, tilt from level, upright or not, and yaw turned since power-on, from the BNO085 IMU (`bert_imu.py`) |
 
 With the IMU plugged in, `walk` and `cruise` hold a straight heading: before each step they compare the IMU's yaw with the heading he started on and add a small turn to cancel the drift. Uncorrected, he drifts about 1.5 degrees left per step. The reply says how much the hold steered. Turn it off or tune it with `HEADING_HOLD`, `HEADING_HOLD_GAIN` and `HEADING_HOLD_MAX_TURN` in `bert_config.py`.
+
+### Wave gait (experimental)
+
+`walk`, `cruise` and `turn` take `gait="tripod"` (the default, Freenove's gait: three legs swing together) or `gait="wave"`: one leg in the air at a time, so five legs always carry him. The idea is less load on each servo and less battery sag. The catch is that each leg is on the ground 5/6 of the cycle instead of 1/2, so a wave cycle covers 5/6 as much ground as a tripod cycle (`WAVE_STRIDE_FACTOR`) and takes more frames. With `gait="wave"` the reply also gives the walking time and the servo battery before and after. The gait is in `bert_gait.py`; the frame counts per leg (`WAVE_FRAMES_SLOW`, `WAVE_FRAMES_FAST`) are in `bert_config.py`. Turn amounts with the wave gait aren't calibrated yet.
+
+`gait_bench.py` compares gaits on the real robot (stop the MCP server first): it walks each `gait:speed` a few steps, measures the distance from the walls with the lidar, and samples the servo battery between every gait frame.
+
+```bash
+sudo /home/pi/bert-venv/bin/python gait_bench.py tripod:10 wave:10 wave:6 --steps 4
+```
 
 ## Safety limits (in `bert_config.py`)
 - Each walk or turn is capped at **10 gait cycles and 25 seconds**, speed 8, step length 30.
