@@ -45,7 +45,7 @@ WAVE_ORDER = (5, 2, 1, 0, 3, 4)
 def frames_for(speed):
     """Frames per leg phase for gait speed 2 (slow) .. 10 (fast)."""
     slow = setting("WAVE_FRAMES_SLOW", 24)
-    fast = setting("WAVE_FRAMES_FAST", 6)
+    fast = setting("WAVE_FRAMES_FAST", 4)
     speed = max(2, min(10, speed))
     return max(3, int(round(slow + (fast - slow) * (speed - 2) / 8.0)))
 
@@ -61,7 +61,7 @@ def plan(speed):
 def stride_vectors(body_points, x, y, angle):
     """Per-leg stride (dx, dy) in mm for one cycle, like run_gait's xy but for the whole cycle.
     x = sideways, y = forward (step length, -35..35), angle = turn value (-10..10, + = Freenove's sign)."""
-    factor = setting("WAVE_STRIDE_FACTOR", 5.0 / 3.0)   # body travel per cycle, in step lengths
+    factor = setting("WAVE_STRIDE_FACTOR", 2.5)   # foot travel per cycle, in step lengths
     a = angle / 180.0 * math.pi
     out = []
     for px, py, _ in body_points:

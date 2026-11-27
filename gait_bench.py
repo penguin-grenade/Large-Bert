@@ -3,9 +3,10 @@
 
 Run on the Pi (nothing else may be driving Bert), from the Code/Server folder:
     sudo /home/pi/bert-venv/bin/python gait_bench.py tripod:10 wave:10 wave:6 --steps 4
-Each run: measure where the walls are (lidar), walk `steps` cycles forward with
+Each run: take a lidar scan, walk `steps` cycles forward with
 all the normal safety checks (lidar guard, ultrasonic, IMU, voice stop), then
-measure again. Between every gait frame the servo battery is sampled, so the
+scan again; the distance is how far the second scan has to slide to line up with
+the first. Between every gait frame the servo battery is sampled, so the
 sag under load is caught, not just the resting voltage. Prints one JSON line
 per run and a table at the end. --back walks back afterwards to the start.
 """
@@ -46,26 +47,41 @@ class Sampler:
                     pass
 
 
-def walls(bert, seconds=1.0):
-    """Median lidar distance (cm) ahead, behind, left and right."""
+def cloud(bert, seconds=1.5):
+    """Lidar points (x right, y ahead, cm) around Bert, without his own body and head."""
+    import math
     import bert_lidar as BL
     pts = bert.get_lidar().read_points(seconds)
-    out = {}
-    for name, centre in (("ahead", 0), ("left", 90), ("behind", 180), ("right", -90)):
-        ds = [d for a, d, q in BL.to_bert(pts)
-              if q >= BL.MIN_QUALITY and not BL.is_masked(a, d) and abs(BL.wrap180(a - centre)) <= 4]
-        out[name] = round(statistics.median(ds), 1) if ds else None
+    out = []
+    for a, d, q in BL.to_bert(pts):
+        if q >= BL.MIN_QUALITY and not BL.is_masked(a, d) and d < 450:
+            r = math.radians(a)
+            out.append((-d * math.sin(r), d * math.cos(r)))
     return out
 
 
-def moved(before, after):
-    """Forward travel from the walls ahead/behind (whichever both scans saw)."""
-    vals = []
-    if before.get("ahead") and after.get("ahead"):
-        vals.append(before["ahead"] - after["ahead"])
-    if before.get("behind") and after.get("behind"):
-        vals.append(after["behind"] - before["behind"])
-    return round(sum(vals) / len(vals), 1) if vals else None
+def moved(before, after, max_cm=100.0, cell=2.0):
+    """How far forward he went between two scans: slide the second scan forward until it best
+    overlaps the first (also trying +-2 deg of rotation). Returns cm, or None if nothing matched."""
+    import math
+    if not before or not after:
+        return None
+    grid = set((int(round(x / cell)), int(round(y / cell))) for x, y in before)
+    best = (0, None)
+    for rot in (-2, -1, 0, 1, 2):
+        c, s_ = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        turned = [(x * c - y * s_, x * s_ + y * c) for x, y in after]
+        shift = -10.0
+        while shift <= max_cm:
+            hits = 0
+            for x, y in turned:
+                gx, gy = int(round(x / cell)), int(round((y + shift) / cell))
+                if (gx, gy) in grid or (gx, gy + 1) in grid or (gx, gy - 1) in grid:
+                    hits += 1
+            if hits > best[0]:
+                best = (hits, shift)
+            shift += 1.0
+    return best[1] if best[0] >= 20 else None
 
 
 def main():
@@ -75,7 +91,13 @@ def main():
     ap.add_argument("--length", type=int, default=30)
     ap.add_argument("--back", action="store_true", help="walk back with the tripod gait after each run")
     ap.add_argument("--rest", type=float, default=8.0, help="seconds to rest between runs (battery recovers)")
+    ap.add_argument("--wave-stride", type=float, help="try another WAVE_STRIDE_FACTOR for this bench only")
+    ap.add_argument("--wave-frames-fast", type=int, help="try another WAVE_FRAMES_FAST for this bench only")
     args = ap.parse_args()
+    if args.wave_stride:
+        L.B.WAVE_STRIDE_FACTOR = args.wave_stride
+    if args.wave_frames_fast:
+        L.B.WAVE_FRAMES_FAST = args.wave_frames_fast
 
     bert = L.Bert(sim=False, use_ears=True)
     import control
@@ -91,18 +113,18 @@ def main():
             speed = int(speed)
             bert.check_battery(force=True)
             rest_v = bert.last_volts[0]
-            before = walls(bert)
+            before = cloud(bert)
             sampler.volts, sampler.n, sampler.first, sampler.last, sampler.on = [], 0, None, None, True
             text = bert.walk(args.length, 0, args.steps, speed, gait=gait)
             sampler.on = False
             time.sleep(1.5)
-            after = walls(bert)
+            after = cloud(bert)
             v = sampler.volts
             r = {"gait": gait, "speed": speed, "steps": args.steps, "length": args.length,
                  "result": text, "rest_v": rest_v,
                  "min_v": round(min(v), 2) if v else None,
                  "mean_v": round(statistics.mean(v), 2) if v else None,
-                 "samples": len(v), "before": before, "after": after, "moved_cm": moved(before, after)}
+                 "samples": len(v), "points": [len(before), len(after)], "moved_cm": moved(before, after)}
             # first to last gait frame (both gaits sleep 10 ms per frame)
             secs = round(sampler.last - sampler.first, 2) if sampler.first else None
             r["seconds"] = secs

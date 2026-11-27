@@ -109,7 +109,7 @@ def check_gait(gait):
 def gait_scale(gait):
     """How far one cycle of this gait goes compared with a tripod cycle of the same step length."""
     if gait == "wave":
-        return getattr(B, "WAVE_STRIDE_FACTOR", 5.0 / 3.0) / 2.0   # tripod moves 2 step lengths a cycle
+        return getattr(B, "WAVE_DISTANCE_SCALE", 0.55)   # measured on the patio, see bert_config.py
     return 1.0
 
 

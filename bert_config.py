@@ -22,9 +22,11 @@ HEADING_HOLD_MAX_TURN = 3    # most gait turn per step for the correction (1 = ~
 
 # ---- Wave gait (experimental, gait="wave"): one leg in the air at a time, see bert_gait.py ----
 WAVE_FRAMES_SLOW = 24        # frames per leg at speed 2 (lift, swing, lower); about 10 ms + servo writes each
-WAVE_FRAMES_FAST = 6         # ...at speed 10. Fewer = quicker swing, but the servos can only move so fast
-WAVE_STRIDE_FACTOR = 5 / 3   # body travel per cycle in step lengths (tripod: 2). The foot furthest back
-                             # reaches stride * factor behind home, so keep it under ~2
+WAVE_FRAMES_FAST = 4         # ...at speed 10 (1 lift, 2 swing, 1 lower). Patio 2026-11-27: 4 beat 6
+WAVE_STRIDE_FACTOR = 2.5     # foot travel per cycle in step lengths (Freenove's wave: 5/3, tripod: 2). The foot
+                             # furthest back reaches stride * factor (75 mm at 30) behind home; 2.5 ran fine
+WAVE_DISTANCE_SCALE = 0.55   # measured: a wave cycle goes this share of a tripod cycle's distance (patio,
+                             # 2026-11-27, at the settings above); used for the distance and turn estimates
 WAVE_FRAME_DELAY = 0.01      # pause after each frame, like Freenove's gait
 
 # ---- cruise: one long lidar-guided walk forward ------------------------------
